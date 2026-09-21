@@ -120,8 +120,13 @@ New-Item -ItemType Directory -Force -Path $SrcRoot, "$($DevDriveLetter):\.mozbui
 # --------------------------------------------------------- 3. winget configure
 Step 'winget configure: converge machine state'
 # Fresh machines gate the configuration feature behind a one-time admin acknowledgement.
-winget configure --enable | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "winget configure --enable failed ($LASTEXITCODE)" }
+# Two spellings across winget versions; neither failing is fatal on its own, `configure`
+# below will say plainly if the feature is still off.
+winget configure --enable
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "winget configure --enable exited $LASTEXITCODE; trying 'winget settings --enable Configuration'"
+    winget settings --enable Configuration
+}
 winget configure -f (Join-Path $Here 'fx-dev.winget') --accept-configuration-agreements --disable-interactivity
 if ($LASTEXITCODE -ne 0) { throw "winget configure failed ($LASTEXITCODE)" }
 # Refresh PATH so git/python from this session are visible below.
