@@ -1,0 +1,100 @@
+# firefox-win-dev / fx-dev.winget  -- WinGet Configuration, DSC v3 schema
+#
+# Apply:   winget configure -f fx-dev.winget --accept-configuration-agreements
+# Drift:   winget configure test -f fx-dev.winget
+#
+# Same file for x64 and ARM64: winget picks the right installer per package.
+# Package IDs: verify with `winget search <name>` before first use; the catalog
+# renames things occasionally.
+#
+# Deliberately NOT here (they live in setup.ps1 because they need logic or
+# aren't declarative): Dev Drive formatting, MozillaBuild, git config, clone
+# + mach bootstrap.
+
+$schema: https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/2023/08/config/document.json
+metadata:
+  winget:
+    processor:
+      identifier: dscv3
+
+resources:
+
+  # ---- OS knobs -----------------------------------------------------------
+
+  - type: Microsoft.Windows/Registry
+    name: LongPaths
+    metadata:
+      description: Win32 long path support (deep objdir paths)
+      winget: { securityContext: elevated }
+    properties:
+      keyPath: HKLM\SYSTEM\CurrentControlSet\Control\FileSystem
+      valueName: LongPathsEnabled
+      valueData: { DWord: 1 }
+      _exist: true
+
+  - type: Microsoft.Windows/Registry
+    name: DeveloperMode
+    metadata:
+      description: Developer Mode (symlinks without elevation, sideloading)
+      winget: { securityContext: elevated }
+    properties:
+      keyPath: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock
+      valueName: AllowDevelopmentWithoutDevLicense
+      valueData: { DWord: 1 }
+      _exist: true
+
+  - type: Microsoft.Windows/Registry
+    name: ShowFileExtensions
+    metadata:
+      description: Explorer shows file extensions
+    properties:
+      keyPath: HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced
+      valueName: HideFileExt
+      valueData: { DWord: 0 }
+      _exist: true
+
+  # ---- Toolchain-adjacent -------------------------------------------------
+
+  - type: Microsoft.WinGet/Package
+    name: Git
+    properties: { id: Git.Git, source: winget }
+
+  # Native Python is what mach uses on the PowerShell path; on ARM64 the
+  # native (not emulated) installer matters for bootstrapping the right
+  # toolchains. winget resolves the arch.
+  - type: Microsoft.WinGet/Package
+    name: Python
+    properties: { id: Python.Python.3.12, source: winget }
+
+  - type: Microsoft.WinGet/Package
+    name: PowerShell7
+    properties: { id: Microsoft.PowerShell, source: winget }
+
+  - type: Microsoft.WinGet/Package
+    name: GitHubCLI
+    metadata: { description: gh pr checkout for reviewing others' work }
+    properties: { id: GitHub.cli, source: winget }
+
+  # ---- Investigate / debug ------------------------------------------------
+
+  - type: Microsoft.WinGet/Package
+    name: WinDbg
+    properties: { id: Microsoft.WinDbg, source: winget }
+
+  - type: Microsoft.WinGet/Package
+    name: WindowsTerminal
+    properties: { id: Microsoft.WindowsTerminal, source: winget }
+
+  - type: Microsoft.WinGet/Package
+    name: VSCode
+    properties: { id: Microsoft.VisualStudioCode, source: winget }
+
+  # Optional. mach bootstrap downloads the pinned MSVC + Windows SDK bundle
+  # itself, so Build Tools is only for the debugger/IDE experience, not for
+  # compiling. Uncomment if you want it.
+  # - type: Microsoft.WinGet/Package
+  #   name: VSBuildTools
+  #   properties:
+  #     id: Microsoft.VisualStudio.2022.BuildTools
+  #     source: winget
+  #     installMode: silent

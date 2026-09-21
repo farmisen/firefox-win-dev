@@ -1,0 +1,13 @@
+# firefox-win-dev / mozconfig.opt  -- for perf-sensitive investigations and
+# "does this reproduce on something shaped like Nightly"
+#
+# Swap in with:  Copy-Item mozconfigs\mozconfig.opt <tree>\mozconfig
+# Separate objdir, so switching back to debug doesn't clobber anything.
+
+ac_add_options --enable-optimize
+ac_add_options --disable-debug
+ac_add_options --enable-debug-symbols   # still get usable stacks in WinDbg
+
+ac_add_options --with-ccache=sccache
+mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-opt
+mk_add_options AUTOCLOBBER=1

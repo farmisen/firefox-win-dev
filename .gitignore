@@ -1,0 +1,7 @@
+# Windows editors / local scratch
+Thumbs.db
+*.swp
+.vscode/
+
+# Never commit a filled-in answer file
+Autounattend.local.xml

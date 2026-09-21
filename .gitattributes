@@ -1,0 +1,5 @@
+# Keep LF everywhere except the files Windows Setup reads
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.xml text eol=crlf
+*.winget text eol=lf
