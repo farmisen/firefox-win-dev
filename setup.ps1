@@ -139,6 +139,12 @@ if ($vol -and $vol.FileSystemType -eq 'ReFS') {
     if ($chk.FileSystemType -ne 'ReFS') { throw "${DevDriveLetter}: is $($chk.FileSystemType), expected ReFS (Dev Drive)" }
     Write-Host "  Formatted ${DevDriveLetter}: as Dev Drive."
 }
+# This script runs elevated, but the developer's shell will not be. Give the user full control
+# of the volume with inheritance (ideally while it is still empty; /T propagates on a re-run
+# after content exists) so mach can later delete/replace toolchains under .mozbuild.
+$devUser = $env:USERNAME
+icacls "$($DevDriveLetter):\" /grant "${devUser}:(OI)(CI)F" /T /C /Q | Out-Null
+Write-Host "  ${DevDriveLetter}: full control granted to $devUser (inheritable)"
 New-Item -ItemType Directory -Force -Path $SrcRoot, "$($DevDriveLetter):\.mozbuild", "$($DevDriveLetter):\sccache" | Out-Null
 
 # --------------------------------------------------------- 3. winget configure
