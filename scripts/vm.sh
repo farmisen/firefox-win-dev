@@ -111,6 +111,11 @@ run_vmware() {
     echo "displayName = \"$name\""; echo "guestOS = \"$guest\""; echo 'firmware = "efi"'
     echo "memsize = \"$ram_mb\""; echo "numvcpus = \"$cpus\""; echo "cpuid.coresPerSocket = \"$cpus\""
     echo 'nvram = "nvram"'; echo 'tools.syncTime = "TRUE"'
+    # PCI topology Workstation's wizard always writes. Without the PCIe root ports (pciBridge4-7)
+    # a PCIe device such as e1000e gets "No PCIe slot available" and vmware-vmx segfaults.
+    echo 'pciBridge0.present = "TRUE"'
+    for b in 4 5 6 7; do echo "pciBridge$b.present = \"TRUE\""; echo "pciBridge$b.virtualDev = \"pcieRootPort\""; echo "pciBridge$b.functions = \"8\""; done
+    echo 'vmci0.present = "TRUE"'
     echo 'sata0.present = "TRUE"'
     echo 'sata0:0.present = "TRUE"'; echo 'sata0:0.fileName = "disk.vmdk"'
     echo 'sata0:1.present = "TRUE"'; echo 'sata0:1.deviceType = "cdrom-image"'; echo "sata0:1.fileName = \"$iso\""; echo 'sata0:1.startConnected = "TRUE"'
