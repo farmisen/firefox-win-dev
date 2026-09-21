@@ -36,33 +36,50 @@ function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 
 # ---------------------------------------------------------------- 1. winget
 Step 'winget: ensure available and >= 1.11 (dscv3 processor)'
-function Get-WinGetVersion {
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { return $null }
-    $raw = (& winget --version 2>$null | Select-Object -First 1) -replace '^v', ''
+function Find-WinGet {
+    # Prefer the exe inside the App Installer package: it works before the per-user
+    # execution alias exists and regardless of what PATH the elevated session inherited.
+    $pkg = Get-AppxPackage Microsoft.DesktopAppInstaller -ErrorAction SilentlyContinue |
+        Sort-Object { [version]$_.Version } -Descending | Select-Object -First 1
+    if ($pkg) { $exe = Join-Path $pkg.InstallLocation 'winget.exe'; if (Test-Path $exe) { return $exe } }
+    $cmd = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+function Get-WinGetVersion($exe) {
+    $raw = (& $exe --version 2>$null | Select-Object -First 1) -replace '^v', ''
     try { [version](($raw -split '[-+]')[0]) } catch { $null }
 }
 $minWinGet = [version]'1.11.0'
-$wg = Get-WinGetVersion
+$WinGet = Find-WinGet
+if (-not $WinGet) {
+    # Right after first logon the inbox package is staged but not yet registered for this
+    # user. Register it ourselves (no network) and give the deployment a few minutes.
+    Write-Host '  winget not registered for this user yet; registering the inbox App Installer package'
+    try { Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe -ErrorAction Stop } catch { Write-Warning "Add-AppxPackage: $($_.Exception.Message.Trim())" }
+    $deadline = (Get-Date).AddMinutes(4); $t0 = Get-Date
+    while (-not ($WinGet = Find-WinGet) -and (Get-Date) -lt $deadline) {
+        Write-Host ("`r  waiting for App Installer registration ... {0:mm\:ss}" -f ((Get-Date) - $t0)) -NoNewline
+        Start-Sleep -Seconds 5
+    }
+    Write-Host ''
+}
+$wg = if ($WinGet) { Get-WinGetVersion $WinGet }
 if (-not $wg -or $wg -lt $minWinGet) {
-    # Only touch App Installer when we must. -Latest chases GitHub's newest release and its
-    # post-check fails if the update doesn't land (common right after first logon); the
-    # module's pinned version is the reliable fallback.
+    # Last resort, needs the network (GitHub): the module's Repair pulls the msixbundle.
+    Write-Warning "winget missing or older than $minWinGet (found: $wg); trying Repair-WinGetPackageManager"
     if (-not (Get-Module -ListAvailable Microsoft.WinGet.Client)) {
         Install-PackageProvider -Name NuGet -Force | Out-Null
         Install-Module Microsoft.WinGet.Client -Force -Scope AllUsers
     }
     Import-Module Microsoft.WinGet.Client
-    try { Repair-WinGetPackageManager -AllUsers -Latest }
-    catch {
-        Write-Warning "Repair-WinGetPackageManager -Latest failed ($($_.Exception.Message.Trim())); trying the module's pinned version"
-        try { Repair-WinGetPackageManager -AllUsers } catch { Write-Warning "Repair-WinGetPackageManager failed: $($_.Exception.Message.Trim())" }
-    }
-    $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
-    $wg = Get-WinGetVersion
+    try { Repair-WinGetPackageManager -AllUsers } catch { Write-Warning "Repair-WinGetPackageManager failed: $($_.Exception.Message.Trim())" }
+    $WinGet = Find-WinGet
+    $wg = if ($WinGet) { Get-WinGetVersion $WinGet }
 }
-if (-not $wg) { throw 'winget is not available. Open Microsoft Store > Library and update "App Installer", then re-run C:\fxsetup\setup.ps1' }
+if (-not $WinGet) { throw 'winget is not available. Open Microsoft Store > Library and update "App Installer", then re-run C:\fxsetup\setup.ps1' }
 if ($wg -lt $minWinGet) { throw "winget $wg is older than $minWinGet; update App Installer from the Microsoft Store, then re-run" }
-Write-Host "  winget $wg"
+Write-Host "  winget $wg  ($WinGet)"
 
 # ------------------------------------------------------------- 2. Dev Drive
 Step "Dev Drive: ensure ${DevDriveLetter}: is a Dev Drive"
@@ -122,12 +139,12 @@ Step 'winget configure: converge machine state'
 # Fresh machines gate the configuration feature behind a one-time admin acknowledgement.
 # Two spellings across winget versions; neither failing is fatal on its own, `configure`
 # below will say plainly if the feature is still off.
-winget configure --enable
+& $WinGet configure --enable
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "winget configure --enable exited $LASTEXITCODE; trying 'winget settings --enable Configuration'"
-    winget settings --enable Configuration
+    & $WinGet settings --enable Configuration
 }
-winget configure -f (Join-Path $Here 'fx-dev.winget') --accept-configuration-agreements --disable-interactivity
+& $WinGet configure -f (Join-Path $Here 'fx-dev.winget') --accept-configuration-agreements --disable-interactivity
 if ($LASTEXITCODE -ne 0) { throw "winget configure failed ($LASTEXITCODE)" }
 # Refresh PATH so git/python from this session are visible below.
 $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
