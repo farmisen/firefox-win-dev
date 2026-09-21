@@ -78,7 +78,7 @@ desktop on its own, a PowerShell window runs `setup.ps1`, `D:` shows up as a
 Dev Drive, and after the final reboot `cd D:\src\firefox; .\mach.ps1 build` starts
 compiling. What to watch for on a first run: the disk-layout step (partition 4
 left RAW), the first reboot (must come from the disk, not the CD -- see notes in
-`test-vm.sh`), and the winget/MozillaBuild steps in `setup.ps1`.
+`vm.sh`), and the winget/MozillaBuild steps in `setup.ps1`.
 
 `vm.sh` picks the hypervisor from the host when `--hypervisor` is omitted (QEMU on
 Linux; Parallels, else VMware Fusion, on macOS). All backends use the same shape:
