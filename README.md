@@ -6,22 +6,43 @@ that one builds Windows Firefox *from* Linux; this one stands up a Windows box
 that builds it natively with a fast iteration loop.
 
 ```
-Autounattend.xml      OS install, disk layout, local account, first-logon hook
-setup.ps1             idempotent converge script (rerun any time)
-fx-dev.winget         declarative machine state (WinGet Configuration, DSC v3)
-mozconfigs/           debug (default loop) and opt (investigations)
+bootstrap.sh                   one shot: render XML + fetch ISO + remaster  (Linux/macOS host)
+scripts/build-autounattend.sh  Autounattend.template.xml -> build/Autounattend.xml
+scripts/fetch-iso.sh           official Win11 ISO from Microsoft (via Fido)
+scripts/make-iso.sh            put the XML at the ISO root, or build a sidecar ISO
+Autounattend.template.xml      OS install, disk layout, local account, first-logon hook
+setup.ps1                      idempotent converge script, runs on the Windows box
+fx-dev.winget                  declarative machine state (WinGet Configuration, DSC v3)
+mozconfigs/                    debug (default loop) and opt (investigations)
 ```
+
+## Build the install media (on your Linux host)
+
+```bash
+sudo apt install p7zip-full genisoimage        # once
+./bootstrap.sh --arch x64 \
+  --setup-url https://raw.githubusercontent.com/<org>/firefox-win-dev/main \
+  --key-file ~/.win11-pro.key                  # optional; omit to install unlicensed
+# prompts for the local account password; writes build/win11-x64-unattended.iso
+```
+
+`--arch arm64` for Windows on ARM VMs/machines. `--iso path.iso` reuses an ISO
+you already have. `--offline` embeds `setup.ps1`, `fx-dev.winget` and
+`mozconfigs/` on the media so first logon works without reaching `--setup-url`.
+`--sidecar` skips the 6 GB remaster and produces a 1 MB ISO holding only the
+XML: attach it as a **second** CD-ROM next to the stock Windows ISO in a VM
+(Setup scans every removable root for `Autounattend.xml`).
+
+Secrets never touch the tree: the password is prompted (or `FXWD_PASSWORD`),
+the key comes from `--key-file` / `FXWD_PRODUCT_KEY`, and everything rendered
+is under `build/` (gitignored, mode 600). The XML stores the password
+base64-obfuscated, not encrypted; treat the ISO accordingly.
 
 ## First boot
 
-1. Edit `Autounattend.xml`: replace `PASSWORD_HERE` (2x) and the raw URL in
-   `FirstLogonCommands`, or ship the repo on the media at
-   `sources\$OEM$\$1\fxsetup\` so nothing is downloaded.
-2. ARM64 media only:
-   `(Get-Content Autounattend.xml) -replace 'processorArchitecture="amd64"','processorArchitecture="arm64"' | Set-Content Autounattend.xml`
-3. Put the XML at the root of the ISO/USB. Boot. Walk away (~45–90 min incl.
-   the first `mach bootstrap` toolchain download).
-4. Reboot once, then `cd D:\src\firefox; .\mach.ps1 build`.
+1. Boot the ISO (UEFI). Walk away (~45–90 min incl. the first `mach bootstrap`
+   toolchain download).
+2. Reboot once, then `cd D:\src\firefox; .\mach.ps1 build`.
 
 VM: give disk 0 >= 220 GB, **or** a second disk >= 100 GB and set
 `Extend=true` on partition 3 / drop partition 4 in the XML.
@@ -60,6 +81,10 @@ Copy-Item ..\..\firefox-win-dev\mozconfigs\mozconfig.debug .\mozconfig
 
 ## Things to verify once on a real machine
 
+* `fetch-iso.sh`: Fido's `-Arch arm64` support and the exact `-Lang` names;
+  compare the printed SHA-256 with Microsoft's download page the first time.
+* `make-iso.sh`: boots in your hypervisor of choice (genisoimage `-udf -iso-level 3`
+  is the standard Win11 remaster recipe, but check once).
 * winget package IDs (`winget search`), MozillaBuild `/S` silent flag.
 * Partition 4 is seen as RAW by `Get-Partition` after setup (Candidate A in
   `setup.ps1`); otherwise the second-disk path (Candidate B) is the fallback.
