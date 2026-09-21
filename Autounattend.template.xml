@@ -7,7 +7,7 @@
 
   This is a TEMPLATE. scripts/build-autounattend.sh renders it to
   build/Autounattend.xml, filling the placeholders (arch, account,
-  optional product key, setup URL). Do not put real values in this file.
+  optional product key, first-logon command). Do not put real values in this file.
 
   Disk layout (disk 0, GPT/UEFI):
     1  EFI      300 MB
@@ -135,8 +135,10 @@
         <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
           <Order>1</Order>
           <Description>firefox-win-dev setup</Description>
-          <!-- Prefer a copy shipped on the media at sources\$OEM$\$1\fxsetup (-> C:\fxsetup); otherwise fetch the pinned script. -->
-          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "if (-not (Test-Path C:\fxsetup\setup.ps1)) { New-Item -ItemType Directory -Force C:\fxsetup | Out-Null; Invoke-WebRequest -UseBasicParsing @@SETUP_URL@@/setup.ps1 -OutFile C:\fxsetup\setup.ps1; Invoke-WebRequest -UseBasicParsing @@SETUP_URL@@/fx-dev.winget -OutFile C:\fxsetup\fx-dev.winget }; Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File C:\fxsetup\setup.ps1'"</CommandLine>
+          <!-- Rendered by scripts/build-autounattend.sh. URL mode: downloads setup.ps1 and its
+               companions at first logon. File mode: looks for a fxsetup folder on any drive
+               (media $OEM$ copied to C:\fxsetup, a sidecar ISO, a USB stick) and runs it. -->
+          <CommandLine>@@FIRST_LOGON_COMMAND@@</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
     </component>

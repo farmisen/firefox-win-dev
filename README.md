@@ -21,18 +21,27 @@ mozconfigs/                    debug (default loop) and opt (investigations)
 
 ```bash
 sudo apt install p7zip-full genisoimage        # once
+
+# A) first logon pulls setup.ps1 & co. from the repo (needs the remote to exist)
 ./bootstrap.sh --arch x64 \
   --setup-url https://raw.githubusercontent.com/<org>/firefox-win-dev/main \
   --key-file ~/.win11-pro.key                  # optional; omit to install unlicensed
-# prompts for the local account password; writes build/win11-x64-unattended.iso
+
+# B) embed this checkout's setup.ps1 (+ fx-dev.winget, mozconfigs/) on the media
+./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --key-file ~/.win11-pro.key
 ```
 
+Exactly one of `--setup-url` / `--setup-file` is required. Both prompt for the
+local account password and write `build/win11-x64-unattended.iso`. B is what
+you want while iterating on `setup.ps1` (no push per try) and for machines
+without network at first logon; A is what you want for a shared, pinned URL.
+
 `--arch arm64` for Windows on ARM VMs/machines. `--iso path.iso` reuses an ISO
-you already have. `--offline` embeds `setup.ps1`, `fx-dev.winget` and
-`mozconfigs/` on the media so first logon works without reaching `--setup-url`.
-`--sidecar` skips the 6 GB remaster and produces a 1 MB ISO holding only the
-XML: attach it as a **second** CD-ROM next to the stock Windows ISO in a VM
-(Setup scans every removable root for `Autounattend.xml`).
+you already have. `--sidecar` skips the 6 GB remaster and produces a tiny ISO
+holding the XML (and, with `--setup-file`, the `fxsetup` folder): attach it as
+a **second** CD-ROM next to the stock Windows ISO in a VM (Setup scans every
+removable root for `Autounattend.xml`; the first-logon hook scans every drive
+for `fxsetup\setup.ps1`).
 
 Secrets never touch the tree: the password is prompted (or `FXWD_PASSWORD`),
 the key comes from `--key-file` / `FXWD_PRODUCT_KEY`, and everything rendered
@@ -45,15 +54,13 @@ Layer by layer, cheapest first:
 
 ```bash
 # 1. Rendering only -- seconds. Inspect build/Autounattend.xml by eye.
-FXWD_PASSWORD=test ./scripts/build-autounattend.sh --setup-url https://example.invalid/x
+FXWD_PASSWORD=test ./scripts/build-autounattend.sh --setup-file ./setup.ps1
 
 # 2. Media assembly without the 6 GB download -- ~1 s.
-./scripts/make-iso.sh --sidecar
+./scripts/make-iso.sh --sidecar --fxsetup-dir .   # or: ./bootstrap.sh --sidecar --setup-file ./setup.ps1
 
 # 3. Full media (downloads the ISO once; reused afterwards).
-./bootstrap.sh --arch x64 --offline --setup-url https://example.invalid/x
-#    --offline embeds setup.ps1 & co. on the media, so the URL can be fake
-#    until the repo has a remote.
+./bootstrap.sh --arch x64 --setup-file ./setup.ps1
 
 # 4. Boot it. Unattended install ~10 min, then setup.ps1 + mach bootstrap ~30-60 min.
 ./scripts/test-vm.sh                 # window if $DISPLAY is set, else VNC on :5900

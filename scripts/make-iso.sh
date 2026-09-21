@@ -9,8 +9,10 @@
 #   --sidecar           instead of remastering, build a tiny ISO holding only
 #                       Autounattend.xml: attach it as a 2nd CD-ROM in a VM.
 #                       Setup scans every removable-drive root for the file.
-#   --oem-dir PATH      also copy this dir to sources/$OEM$/$1/fxsetup on the
-#                       media (-> C:\fxsetup), so first logon needs no network.
+#   --fxsetup-dir PATH  embed this dir (setup.ps1, fx-dev.winget, mozconfigs/) on
+#                       the media: sources/$OEM$/$1/fxsetup on a remaster (Setup
+#                       copies it to C:\fxsetup), /fxsetup on a sidecar. Pair with
+#                       an XML rendered via --setup-file.
 #
 # Requires: 7z (extract), genisoimage (author). Both are in Ubuntu's repos.
 # Output is UEFI-bootable (efisys_noprompt.bin, so a VM never waits for a key
@@ -18,25 +20,27 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
-iso="" xml="$here/build/Autounattend.xml" out="" sidecar=0 oem_dir=""
+iso="" xml="$here/build/Autounattend.xml" out="" sidecar=0 fxsetup_dir=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --iso) iso=$2; shift 2;;
     --xml) xml=$2; shift 2;;
     --out) out=$2; shift 2;;
     --sidecar) sidecar=1; shift;;
-    --oem-dir) oem_dir=$2; shift 2;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0;;
+    --fxsetup-dir) fxsetup_dir=$2; shift 2;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
 [[ -f "$xml" ]] || { echo "missing $xml (run scripts/build-autounattend.sh first)" >&2; exit 2; }
+[[ -z "$fxsetup_dir" || -f "$fxsetup_dir/setup.ps1" ]] || { echo "--fxsetup-dir: $fxsetup_dir/setup.ps1 not found" >&2; exit 2; }
 command -v genisoimage >/dev/null || { echo "genisoimage not found (apt install genisoimage)" >&2; exit 1; }
 
 if (( sidecar )); then
   out=${out:-$here/build/autounattend-sidecar.iso}
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   cp "$xml" "$tmp/Autounattend.xml"
+  [[ -n "$fxsetup_dir" ]] && cp -r "$fxsetup_dir" "$tmp/fxsetup"
   genisoimage -quiet -J -r -V AUTOUNATTEND -o "$out" "$tmp"
   echo "sidecar ISO -> $out  (attach as second CD-ROM alongside the stock Windows ISO)"
   exit 0
@@ -52,10 +56,10 @@ echo "extracting $iso -> $work ..." >&2
 7z x -bso0 -bsp1 -o"$work" "$iso"
 
 cp "$xml" "$work/Autounattend.xml"
-if [[ -n "$oem_dir" ]]; then
+if [[ -n "$fxsetup_dir" ]]; then
   dst="$work/sources/\$OEM\$/\$1/fxsetup"
   mkdir -p "$dst"
-  cp -r "$oem_dir"/. "$dst"/
+  cp -r "$fxsetup_dir"/. "$dst"/
 fi
 
 boot_args=()
