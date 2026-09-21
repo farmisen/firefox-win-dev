@@ -26,6 +26,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
+try { Start-Transcript -Path (Join-Path $Here 'setup.log') -Append | Out-Null } catch {}   # everything below also lands in C:\fxsetup\setup.log
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 
 # ---------------------------------------------------------------- 1. winget

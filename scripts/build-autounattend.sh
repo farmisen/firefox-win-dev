@@ -57,13 +57,13 @@ elif [[ -n "$setup_url" ]]; then
   [[ "$setup_url" =~ ^https?://[^[:space:]\"\'\<\>\&]+$ ]] || { echo "--setup-url must be an http(s) URL without quotes/&/<>" >&2; exit 2; }
   setup_url=${setup_url%/}
   # Fetch each file, then run setup.ps1 elevated. -NoExit keeps the window (and any error) on screen.
-  first_logon="powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command \"foreach (\$f in 'setup.ps1','fx-dev.winget','mozconfigs/mozconfig.debug','mozconfigs/mozconfig.opt') { \$d = Join-Path C:\\fxsetup \$f; New-Item -ItemType Directory -Force (Split-Path \$d) | Out-Null; Invoke-WebRequest -UseBasicParsing ('$setup_url/' + \$f) -OutFile \$d }; Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File C:\\fxsetup\\setup.ps1'\""
+  first_logon="powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command \"foreach (\$f in 'setup.ps1','fx-dev.winget','mozconfigs/mozconfig.debug','mozconfigs/mozconfig.opt') { \$d = Join-Path C:\\fxsetup \$f; New-Item -ItemType Directory -Force (Split-Path \$d) | Out-Null; Invoke-WebRequest -UseBasicParsing ('$setup_url/' + \$f) -OutFile \$d }; Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -NoExit -ExecutionPolicy Bypass -File C:\\fxsetup\\setup.ps1'\""
   mode="url $setup_url"
 elif [[ -n "$setup_file" ]]; then
   [[ -f "$setup_file" ]] || { echo "--setup-file: $setup_file not found" >&2; exit 2; }
   [[ "$(basename "$setup_file")" == setup.ps1 ]] || echo "warning: --setup-file is usually setup.ps1; the media will still look for fxsetup\\setup.ps1" >&2
   # Find fxsetup\ on any filesystem drive (C:\fxsetup from $OEM$, or the root of a sidecar ISO / USB).
-  first_logon="powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command \"if (-not (Test-Path C:\\fxsetup\\setup.ps1)) { \$src = Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path \$_.Root 'fxsetup' } | Where-Object { Test-Path (Join-Path \$_ 'setup.ps1') } | Select-Object -First 1; if (-not \$src) { throw 'fxsetup folder not found on any drive' }; Copy-Item -Recurse -Force \$src C:\\fxsetup }; Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File C:\\fxsetup\\setup.ps1'\""
+  first_logon="powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command \"if (-not (Test-Path C:\\fxsetup\\setup.ps1)) { \$src = Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path \$_.Root 'fxsetup' } | Where-Object { Test-Path (Join-Path \$_ 'setup.ps1') } | Select-Object -First 1; if (-not \$src) { throw 'fxsetup folder not found on any drive' }; Copy-Item -Recurse -Force \$src C:\\fxsetup }; Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -NoExit -ExecutionPolicy Bypass -File C:\\fxsetup\\setup.ps1'\""
   mode="file $setup_file"
 else
   echo "one of --setup-url URL / --setup-file PATH is required (or FXWD_SETUP_URL / FXWD_SETUP_FILE)" >&2; exit 2
