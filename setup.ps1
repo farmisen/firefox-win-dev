@@ -193,6 +193,15 @@ Step 'Environment: mach state + sccache on the Dev Drive'
 $env:MOZBUILD_STATE_PATH = "$($DevDriveLetter):\.mozbuild"
 $env:SCCACHE_DIR         = "$($DevDriveLetter):\sccache"
 
+# Windows client editions ship with ExecutionPolicy=Restricted, which blocks mach.ps1 (and every
+# other local .ps1). RemoteSigned = local scripts run, downloaded ones must be signed. Windows
+# PowerShell and PowerShell 7 keep separate policies, so set both.
+foreach ($shell in 'powershell.exe', 'pwsh.exe') {
+    if (Get-Command $shell -ErrorAction SilentlyContinue) {
+        & $shell -NoProfile -Command 'Set-ExecutionPolicy -Scope LocalMachine RemoteSigned -Force' 2>$null
+    }
+}
+
 # Dev Drive already runs Defender in performance mode; these cover the C: bits.
 foreach ($p in 'C:\mozilla-build', "$env:LOCALAPPDATA\Temp") {
     Add-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue
