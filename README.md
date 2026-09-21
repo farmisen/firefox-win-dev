@@ -70,7 +70,8 @@ FXWD_PASSWORD=test ./scripts/build-autounattend.sh --setup-file ./setup.ps1
 ./scripts/vm.sh --iso build/win11-x64.iso --sidecar build/autounattend-sidecar.iso
 
 # ...or in one go: build the media and start the VM
-./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --vm qemu
+./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --vm                       # host default
+./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --vm --hypervisor vmware
 ```
 
 What "pass" looks like: Setup never asks a question, reboots into the `fxdev`
