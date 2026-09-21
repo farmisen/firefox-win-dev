@@ -10,6 +10,7 @@ bootstrap.sh                   one shot: render XML + fetch ISO + remaster  (Lin
 scripts/build-autounattend.sh  Autounattend.template.xml -> build/Autounattend.xml
 scripts/fetch-iso.sh           official Win11 ISO from Microsoft (via Fido)
 scripts/make-iso.sh            put the XML at the ISO root, or build a sidecar ISO
+scripts/test-vm.sh             boot the result in a throwaway QEMU/KVM VM
 Autounattend.template.xml      OS install, disk layout, local account, first-logon hook
 setup.ps1                      idempotent converge script, runs on the Windows box
 fx-dev.winget                  declarative machine state (WinGet Configuration, DSC v3)
@@ -37,6 +38,38 @@ Secrets never touch the tree: the password is prompted (or `FXWD_PASSWORD`),
 the key comes from `--key-file` / `FXWD_PRODUCT_KEY`, and everything rendered
 is under `build/` (gitignored, mode 600). The XML stores the password
 base64-obfuscated, not encrypted; treat the ISO accordingly.
+
+## Testing the media locally (QEMU/KVM, x64)
+
+Layer by layer, cheapest first:
+
+```bash
+# 1. Rendering only -- seconds. Inspect build/Autounattend.xml by eye.
+FXWD_PASSWORD=test ./scripts/build-autounattend.sh --setup-url https://example.invalid/x
+
+# 2. Media assembly without the 6 GB download -- ~1 s.
+./scripts/make-iso.sh --sidecar
+
+# 3. Full media (downloads the ISO once; reused afterwards).
+./bootstrap.sh --arch x64 --offline --setup-url https://example.invalid/x
+#    --offline embeds setup.ps1 & co. on the media, so the URL can be fake
+#    until the repo has a remote.
+
+# 4. Boot it. Unattended install ~10 min, then setup.ps1 + mach bootstrap ~30-60 min.
+./scripts/test-vm.sh                 # window if $DISPLAY is set, else VNC on :5900
+./scripts/test-vm.sh --fresh         # wipe and reinstall
+./scripts/test-vm.sh --iso build/win11-x64.iso --sidecar build/autounattend-sidecar.iso
+```
+
+What "pass" looks like: Setup never asks a question, reboots into the `fxdev`
+desktop on its own, a PowerShell window runs `setup.ps1`, `D:` shows up as a
+Dev Drive, and after the final reboot `cd D:\src\firefox; .\mach.ps1 build` starts
+compiling. What to watch for on a first run: the disk-layout step (partition 4
+left RAW), the first reboot (must come from the disk, not the CD -- see notes in
+`test-vm.sh`), and the winget/MozillaBuild steps in `setup.ps1`.
+
+`test-vm.sh` needs `qemu-system-x86 ovmf` and a user in the `kvm` group. ARM64
+media can only be tested on real ARM hardware or an ARM host (UTM, Parallels).
 
 ## First boot
 
