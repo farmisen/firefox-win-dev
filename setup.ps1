@@ -78,6 +78,19 @@ if ($vol -and $vol.FileSystemType -eq 'ReFS') {
         }
     }
     if (-not $part) { throw "No RAW partition/disk >= 50 GB to turn into a Dev Drive. Free one up or pass -SkipTree and place the tree elsewhere." }
+    # In a VM the install DVD usually grabs the first free letter (D:). Evict optical drives to a
+    # high letter so the Dev Drive gets the letter everything else (mozconfigs, docs) assumes.
+    $occupant = Get-Volume -DriveLetter $DevDriveLetter -ErrorAction SilentlyContinue
+    if ($occupant -and $occupant.DriveType -eq 'CD-ROM') {
+        $free = (90..69 | ForEach-Object { [string][char]$_ }) |
+            Where-Object { -not (Get-Volume -DriveLetter $_ -ErrorAction SilentlyContinue) -and -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) } |
+            Select-Object -First 1
+        $cd = Get-CimInstance Win32_Volume -Filter "DriveLetter='$($DevDriveLetter):'"
+        Set-CimInstance -InputObject $cd -Property @{ DriveLetter = "${free}:" }
+        Write-Host "  moved optical drive ${DevDriveLetter}: -> ${free}:"
+    } elseif ($occupant) {
+        throw "${DevDriveLetter}: is taken by a $($occupant.DriveType) volume ($($occupant.FileSystemLabel)); pass -DevDriveLetter <other> or free it"
+    }
     if ($part.DriveLetter -ne $DevDriveLetter) { $part | Set-Partition -NewDriveLetter $DevDriveLetter }
     # Dev Drive = ReFS + Defender performance mode + trusted. Needs Win11 22H2+.
     Format-Volume -DriveLetter $DevDriveLetter -DevDrive -FileSystemLabel 'Dev' -Confirm:$false | Out-Null
