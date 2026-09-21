@@ -30,13 +30,34 @@ try { Start-Transcript -Path (Join-Path $Here 'setup.log') -Append | Out-Null } 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 
 # ---------------------------------------------------------------- 1. winget
-Step 'winget: ensure current (dscv3 processor needs WinGet >= 1.11)'
-if (-not (Get-Module -ListAvailable Microsoft.WinGet.Client)) {
-    Install-PackageProvider -Name NuGet -Force | Out-Null
-    Install-Module Microsoft.WinGet.Client -Force -Scope AllUsers
+Step 'winget: ensure available and >= 1.11 (dscv3 processor)'
+function Get-WinGetVersion {
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { return $null }
+    $raw = (& winget --version 2>$null | Select-Object -First 1) -replace '^v', ''
+    try { [version](($raw -split '[-+]')[0]) } catch { $null }
 }
-Import-Module Microsoft.WinGet.Client
-Repair-WinGetPackageManager -AllUsers -Latest
+$minWinGet = [version]'1.11.0'
+$wg = Get-WinGetVersion
+if (-not $wg -or $wg -lt $minWinGet) {
+    # Only touch App Installer when we must. -Latest chases GitHub's newest release and its
+    # post-check fails if the update doesn't land (common right after first logon); the
+    # module's pinned version is the reliable fallback.
+    if (-not (Get-Module -ListAvailable Microsoft.WinGet.Client)) {
+        Install-PackageProvider -Name NuGet -Force | Out-Null
+        Install-Module Microsoft.WinGet.Client -Force -Scope AllUsers
+    }
+    Import-Module Microsoft.WinGet.Client
+    try { Repair-WinGetPackageManager -AllUsers -Latest }
+    catch {
+        Write-Warning "Repair-WinGetPackageManager -Latest failed ($($_.Exception.Message.Trim())); trying the module's pinned version"
+        try { Repair-WinGetPackageManager -AllUsers } catch { Write-Warning "Repair-WinGetPackageManager failed: $($_.Exception.Message.Trim())" }
+    }
+    $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+    $wg = Get-WinGetVersion
+}
+if (-not $wg) { throw 'winget is not available. Open Microsoft Store > Library and update "App Installer", then re-run C:\fxsetup\setup.ps1' }
+if ($wg -lt $minWinGet) { throw "winget $wg is older than $minWinGet; update App Installer from the Microsoft Store, then re-run" }
+Write-Host "  winget $wg"
 
 # ------------------------------------------------------------- 2. Dev Drive
 Step "Dev Drive: ensure ${DevDriveLetter}: is a Dev Drive"
