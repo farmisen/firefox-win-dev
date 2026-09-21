@@ -46,6 +46,13 @@ function Find-WinGet {
     if ($cmd) { return $cmd.Source }
     return $null
 }
+function Invoke-WinGet {
+    # The Store can auto-update App Installer mid-run, which moves the package directory and
+    # deletes the old one, so never cache the exe path: resolve it on every call.
+    $exe = Find-WinGet
+    if (-not $exe) { throw 'winget.exe vanished (App Installer update in progress?). Wait a minute and re-run C:\fxsetup\setup.ps1' }
+    & $exe @args
+}
 function Get-WinGetVersion($exe) {
     $raw = (& $exe --version 2>$null | Select-Object -First 1) -replace '^v', ''
     try { [version](($raw -split '[-+]')[0]) } catch { $null }
@@ -136,15 +143,16 @@ New-Item -ItemType Directory -Force -Path $SrcRoot, "$($DevDriveLetter):\.mozbui
 
 # --------------------------------------------------------- 3. winget configure
 Step 'winget configure: converge machine state'
-# Fresh machines gate the configuration feature behind a one-time admin acknowledgement.
-# Two spellings across winget versions; neither failing is fatal on its own, `configure`
-# below will say plainly if the feature is still off.
-& $WinGet configure --enable
-if ($LASTEXITCODE -ne 0) {
-    Write-Warning "winget configure --enable exited $LASTEXITCODE; trying 'winget settings --enable Configuration'"
-    & $WinGet settings --enable Configuration
+# Fresh machines gate the configuration feature behind a one-time admin acknowledgement,
+# which also pulls the configuration components from the Store. Store access is flaky in
+# the first minutes after logon (and App Installer may be updating itself), so retry.
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    Invoke-WinGet configure --enable
+    if ($LASTEXITCODE -eq 0) { break }
+    Write-Warning "winget configure --enable exited $LASTEXITCODE (attempt $attempt/3); retrying in 20s"
+    Start-Sleep -Seconds 20
 }
-& $WinGet configure -f (Join-Path $Here 'fx-dev.winget') --accept-configuration-agreements --disable-interactivity
+Invoke-WinGet configure -f (Join-Path $Here 'fx-dev.winget') --accept-configuration-agreements --disable-interactivity
 if ($LASTEXITCODE -ne 0) { throw "winget configure failed ($LASTEXITCODE)" }
 # Refresh PATH so git/python from this session are visible below.
 $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
