@@ -136,10 +136,24 @@ $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Env
 Step 'MozillaBuild: ensure C:\mozilla-build'
 if (-not (Test-Path 'C:\mozilla-build\start-shell.bat')) {
     $exe = "$env:TEMP\MozillaBuildSetup-Latest.exe"
-    Invoke-WebRequest -UseBasicParsing 'https://ftp.mozilla.org/pub/mozilla/libraries/win32/MozillaBuildSetup-Latest.exe' -OutFile $exe
-    # NSIS installer -> /S is silent. Verify against the current release once.
-    Start-Process $exe -ArgumentList '/S' -Wait
+    $url = 'https://ftp.mozilla.org/pub/mozilla/libraries/win32/MozillaBuildSetup-Latest.exe'
+    Write-Host "  downloading $url"
+    # curl.exe ships with Windows: progress bar, and -C - resumes a partial file from an interrupted run.
+    & "$env:SystemRoot\System32\curl.exe" -fL --progress-bar -C - -o $exe $url
+    if ($LASTEXITCODE -ne 0) { throw "MozillaBuild download failed (curl exit $LASTEXITCODE)" }
+    Write-Host ("  downloaded {0:N0} MB" -f ((Get-Item $exe).Length / 1MB))
+    # NSIS installer: /S is silent by design, so show a heartbeat instead. Typically 1-3 minutes.
+    $proc = Start-Process $exe -ArgumentList '/S' -PassThru
+    $t0 = Get-Date
+    while (-not $proc.HasExited) {
+        Write-Host ("`r  installing MozillaBuild (silent) ... {0:mm\:ss}" -f ((Get-Date) - $t0)) -NoNewline
+        Start-Sleep -Seconds 2
+    }
+    Write-Host ""
+    if ($proc.ExitCode -ne 0) { throw "MozillaBuild installer exited $($proc.ExitCode)" }
+    Remove-Item $exe -ErrorAction SilentlyContinue
 }
+Write-Host "  C:\mozilla-build present"
 $mbBin = 'C:\mozilla-build\bin'
 $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
 if ($machinePath -notlike "*$mbBin*") {
