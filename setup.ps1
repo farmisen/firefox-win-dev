@@ -119,6 +119,9 @@ New-Item -ItemType Directory -Force -Path $SrcRoot, "$($DevDriveLetter):\.mozbui
 
 # --------------------------------------------------------- 3. winget configure
 Step 'winget configure: converge machine state'
+# Fresh machines gate the configuration feature behind a one-time admin acknowledgement.
+winget configure --enable | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "winget configure --enable failed ($LASTEXITCODE)" }
 winget configure -f (Join-Path $Here 'fx-dev.winget') --accept-configuration-agreements --disable-interactivity
 if ($LASTEXITCODE -ne 0) { throw "winget configure failed ($LASTEXITCODE)" }
 # Refresh PATH so git/python from this session are visible below.
