@@ -26,6 +26,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Terminating errors otherwise surface as "setup.ps1: line 1"; say where they really happened.
+trap {
+    Write-Host ("`nFAILED at setup.ps1:{0}  {1}" -f $_.InvocationInfo.ScriptLineNumber, $_.InvocationInfo.Line.Trim()) -ForegroundColor Red
+    break
+}
 try { Start-Transcript -Path (Join-Path $Here 'setup.log') -Append | Out-Null } catch {}   # everything below also lands in C:\fxsetup\setup.log
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 
@@ -91,9 +96,22 @@ if ($vol -and $vol.FileSystemType -eq 'ReFS') {
     } elseif ($occupant) {
         throw "${DevDriveLetter}: is taken by a $($occupant.DriveType) volume ($($occupant.FileSystemLabel)); pass -DevDriveLetter <other> or free it"
     }
-    if ($part.DriveLetter -ne $DevDriveLetter) { $part | Set-Partition -NewDriveLetter $DevDriveLetter }
-    # Dev Drive = ReFS + Defender performance mode + trusted. Needs Win11 22H2+.
-    Format-Volume -DriveLetter $DevDriveLetter -DevDrive -FileSystemLabel 'Dev' -Confirm:$false | Out-Null
+    # Explicit identifiers: piping a CIM partition object into Set-Partition binds several
+    # parameter sets at once ("Parameter set cannot be resolved").
+    if ($part.DriveLetter -ne $DevDriveLetter) {
+        Set-Partition -DiskNumber $part.DiskNumber -PartitionNumber $part.PartitionNumber -NewDriveLetter $DevDriveLetter
+    }
+    # Dev Drive = ReFS + Defender performance mode + trusted. Needs Win11 22H2+. Two documented
+    # ways; format.com is the fallback if this Storage module build lacks/rejects -DevDrive.
+    try {
+        Format-Volume -DriveLetter $DevDriveLetter -DevDrive -FileSystemLabel 'Dev' -Confirm:$false -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Warning "Format-Volume -DevDrive failed ($($_.Exception.Message.Trim())); using format.com /DevDrv"
+        & "$env:SystemRoot\System32\format.com" "${DevDriveLetter}:" /DevDrv /Q /Y /V:Dev | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "format.com /DevDrv failed ($LASTEXITCODE)" }
+    }
+    $chk = Get-Volume -DriveLetter $DevDriveLetter
+    if ($chk.FileSystemType -ne 'ReFS') { throw "${DevDriveLetter}: is $($chk.FileSystemType), expected ReFS (Dev Drive)" }
     Write-Host "  Formatted ${DevDriveLetter}: as Dev Drive."
 }
 New-Item -ItemType Directory -Force -Path $SrcRoot, "$($DevDriveLetter):\.mozbuild", "$($DevDriveLetter):\sccache" | Out-Null
