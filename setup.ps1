@@ -86,7 +86,9 @@ if ($vol -and $vol.FileSystemType -eq 'ReFS') {
     # In a VM the install DVD usually grabs the first free letter (D:). Evict optical drives to a
     # high letter so the Dev Drive gets the letter everything else (mozconfigs, docs) assumes.
     $occupant = Get-Volume -DriveLetter $DevDriveLetter -ErrorAction SilentlyContinue
-    if ($occupant -and $occupant.DriveType -eq 'CD-ROM') {
+    if ($part.DriveLetter -eq $DevDriveLetter) {
+        # a previous run already assigned the letter to our RAW partition; nothing to evict
+    } elseif ($occupant -and $occupant.DriveType -eq 'CD-ROM') {
         $free = (90..69 | ForEach-Object { [string][char]$_ }) |
             Where-Object { -not (Get-Volume -DriveLetter $_ -ErrorAction SilentlyContinue) -and -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) } |
             Select-Object -First 1
@@ -102,13 +104,12 @@ if ($vol -and $vol.FileSystemType -eq 'ReFS') {
         Set-Partition -DiskNumber $part.DiskNumber -PartitionNumber $part.PartitionNumber -NewDriveLetter $DevDriveLetter
     }
     # Dev Drive = ReFS + Defender performance mode + trusted. Needs Win11 22H2+. Two documented
-    # ways; format.com is the fallback if this Storage module build lacks/rejects -DevDrive.
-    try {
-        Format-Volume -DriveLetter $DevDriveLetter -DevDrive -FileSystemLabel 'Dev' -Confirm:$false -ErrorAction Stop | Out-Null
-    } catch {
-        Write-Warning "Format-Volume -DevDrive failed ($($_.Exception.Message.Trim())); using format.com /DevDrv"
-        & "$env:SystemRoot\System32\format.com" "${DevDriveLetter}:" /DevDrv /Q /Y /V:Dev | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "format.com /DevDrv failed ($LASTEXITCODE)" }
+    # ways: format.com /DevDrv first (deterministic); Format-Volume -DevDrive as fallback, since
+    # on 25H2 the cmdlet's -DevDrive switch trips "Parameter set cannot be resolved".
+    & "$env:SystemRoot\System32\format.com" "${DevDriveLetter}:" /DevDrv /Q /Y /V:Dev | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "format.com /DevDrv exited $LASTEXITCODE; trying Format-Volume -DevDrive"
+        Format-Volume -DriveLetter $DevDriveLetter -DevDrive -Confirm:$false -ErrorAction Stop | Out-Null
     }
     $chk = Get-Volume -DriveLetter $DevDriveLetter
     if ($chk.FileSystemType -ne 'ReFS') { throw "${DevDriveLetter}: is $($chk.FileSystemType), expected ReFS (Dev Drive)" }
