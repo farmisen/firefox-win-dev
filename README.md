@@ -8,7 +8,7 @@ that builds it natively with a fast iteration loop.
 ```
 bootstrap.sh                   one shot: render XML + fetch ISO + remaster  (Linux/macOS host)
 scripts/build-autounattend.sh  Autounattend.template.xml -> build/Autounattend.xml
-scripts/fetch-iso.sh           official Win11 ISO from Microsoft (via Fido)
+scripts/fetch-iso.sh           official Win11 ISO from Microsoft (stdlib Python port of Fido's API calls)
 scripts/make-iso.sh            put the XML at the ISO root, or build a sidecar ISO
 scripts/test-vm.sh             boot the result in a throwaway QEMU/KVM VM
 Autounattend.template.xml      OS install, disk layout, local account, first-logon hook
@@ -121,8 +121,9 @@ Copy-Item ..\..\firefox-win-dev\mozconfigs\mozconfig.debug .\mozconfig
 
 ## Things to verify once on a real machine
 
-* `fetch-iso.sh`: Fido's `-Arch arm64` support and the exact `-Lang` names;
-  compare the printed SHA-256 with Microsoft's download page the first time.
+* `fetch-iso.py`: the request sequence is ported from Fido and Microsoft can
+  change it; edition ids are read from Fido.ps1 at run time so releases roll
+  over without edits. Compare the printed SHA-256 with the download page once.
 * `make-iso.sh`: boots in your hypervisor of choice (genisoimage `-udf -iso-level 3`
   is the standard Win11 remaster recipe, but check once).
 * winget package IDs (`winget search`), MozillaBuild `/S` silent flag.
