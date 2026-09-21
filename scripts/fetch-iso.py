@@ -10,10 +10,14 @@ source for the per-release product edition ids Microsoft rotates.
 
   fetch-iso.py --arch x64|arm64 [--lang English] [--url-only] [--out PATH]
 
-URLs are valid for ~24 h. Microsoft rate-limits by IP; a "715-123130" style
-error means back off (or change IP) and retry later.
+URLs are valid for ~24 h and are cached next to the ISO (build/win11-<arch>.url)
+so repeated runs reuse them instead of hitting the API again: Microsoft's
+anti-abuse layer ("Sentinel", error type 8/9) rate-limits link requests per
+IP, and once tripped it stays tripped for hours. If that happens, wait, use a
+different IP, or pass --url with a link obtained elsewhere.
 """
 import argparse, json, os, re, subprocess, sys, time, uuid, urllib.request, urllib.error
+from urllib.parse import urlparse, parse_qs
 
 ORG_ID = "y6jn8c31"
 PROFILE_ID = "606624d44113"
@@ -54,7 +58,9 @@ def get_json(url, headers=None, attempts=3):
         if data.get("Errors"):
             err = data["Errors"][0]
             last = RuntimeError(f"Microsoft API error {err.get('Type')}: {err.get('Value')}")
-            if err.get("Type") == 9:      # blocked / rate limited: retrying won't help
+            if err.get("Type") in (8, 9):  # Sentinel rejection / blocked: retrying won't help
+                last = RuntimeError(str(last) + "\n  This is Microsoft's per-IP rate limit on link requests. Wait a few hours (up to 24),"
+                                    "\n  come from another IP, or pass --url <link> if you already have a valid one.")
                 break
             continue
         return data
@@ -119,6 +125,27 @@ def download_url(arch, lang, tools_dir, fido_ref):
     raise SystemExit(f"no {arch} link in reply (got: {have})")
 
 
+def url_expiry(url):
+    """Microsoft signs links with P1=<unix expiry>; None if absent."""
+    try:
+        return int(parse_qs(urlparse(url).query)["P1"][0])
+    except (KeyError, ValueError, IndexError):
+        return None
+
+
+def cached_url(cache_path):
+    try:
+        url = open(cache_path).read().strip()
+    except OSError:
+        return None
+    exp = url_expiry(url)
+    if not url.startswith("https://") or (exp is not None and exp - time.time() < 600):
+        return None
+    log(f"reusing cached URL from {os.path.basename(cache_path)}"
+        + (f" (valid {int((exp - time.time()) / 3600)}h more)" if exp else ""))
+    return url
+
+
 def main():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -127,14 +154,22 @@ def main():
     ap.add_argument("--url-only", action="store_true", help="print the URL and exit")
     ap.add_argument("--out", help="download destination (default build/win11-<arch>.iso)")
     ap.add_argument("--fido-ref", default=os.environ.get("FIDO_REF", "master"), help="pbatard/Fido git ref to read edition ids from")
+    ap.add_argument("--url", help="skip the API and use this download link (e.g. one you got before being rate-limited)")
+    ap.add_argument("--no-cache", action="store_true", help="ignore the cached URL and ask the API again")
     a = ap.parse_args()
 
-    url = download_url(a.arch, a.lang, os.path.join(here, ".tools"), a.fido_ref)
+    out = a.out or os.path.join(here, "build", f"win11-{a.arch}.iso")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    cache = os.path.splitext(out)[0] + ".url"
+
+    url = a.url or (None if a.no_cache else cached_url(cache))
+    if not url:
+        url = download_url(a.arch, a.lang, os.path.join(here, ".tools"), a.fido_ref)
+    with open(cache, "w") as f:          # always refresh: a --url given by hand is worth caching too
+        f.write(url + "\n")
     if a.url_only:
         print(url)
         return
-    out = a.out or os.path.join(here, "build", f"win11-{a.arch}.iso")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
     name = url.split("?")[0].rsplit("/", 1)[-1]
     log(f"downloading {name} -> {out}  (curl -C - resumes if interrupted)")
     rc = subprocess.call(["curl", "-fL", "-C", "-", "--retry", "5", "--progress-bar", "-A", UA, "-o", out, url])
