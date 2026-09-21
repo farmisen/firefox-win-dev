@@ -10,7 +10,7 @@ bootstrap.sh                   one shot: render XML + fetch ISO + remaster  (Lin
 scripts/build-autounattend.sh  Autounattend.template.xml -> build/Autounattend.xml
 scripts/fetch-iso.sh           official Win11 ISO from Microsoft (stdlib Python port of Fido's API calls)
 scripts/make-iso.sh            put the XML at the ISO root, or build a sidecar ISO
-scripts/test-vm.sh             boot the result in a throwaway QEMU/KVM VM
+scripts/vm.sh                  create + start a throwaway VM: qemu | vmware | parallels
 Autounattend.template.xml      OS install, disk layout, local account, first-logon hook
 setup.ps1                      idempotent converge script, runs on the Windows box
 fx-dev.winget                  declarative machine state (WinGet Configuration, DSC v3)
@@ -63,9 +63,14 @@ FXWD_PASSWORD=test ./scripts/build-autounattend.sh --setup-file ./setup.ps1
 ./bootstrap.sh --arch x64 --setup-file ./setup.ps1
 
 # 4. Boot it. Unattended install ~10 min, then setup.ps1 + mach bootstrap ~30-60 min.
-./scripts/test-vm.sh                 # window if $DISPLAY is set, else VNC on :5900
-./scripts/test-vm.sh --fresh         # wipe and reinstall
-./scripts/test-vm.sh --iso build/win11-x64.iso --sidecar build/autounattend-sidecar.iso
+./scripts/vm.sh                                 # QEMU/KVM on Linux; window if $DISPLAY, else VNC :5900
+./scripts/vm.sh --hypervisor vmware             # VMware Workstation / Fusion (via vmrun)
+./scripts/vm.sh --hypervisor parallels          # Parallels Desktop (macOS; needs --arch arm64 media)
+./scripts/vm.sh --fresh                         # destroy the VM and reinstall
+./scripts/vm.sh --iso build/win11-x64.iso --sidecar build/autounattend-sidecar.iso
+
+# ...or in one go: build the media and start the VM
+./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --vm qemu
 ```
 
 What "pass" looks like: Setup never asks a question, reboots into the `fxdev`
@@ -75,8 +80,13 @@ compiling. What to watch for on a first run: the disk-layout step (partition 4
 left RAW), the first reboot (must come from the disk, not the CD -- see notes in
 `test-vm.sh`), and the winget/MozillaBuild steps in `setup.ps1`.
 
-`test-vm.sh` needs `qemu-system-x86 ovmf` and a user in the `kvm` group. ARM64
-media can only be tested on real ARM hardware or an ARM host (UTM, Parallels).
+`vm.sh` picks the hypervisor from the host when `--hypervisor` is omitted (QEMU on
+Linux; Parallels, else VMware Fusion, on macOS). All backends use the same shape:
+UEFI, SATA disk + CD (stock Windows has those drivers), e1000e NAT, no TPM, and
+no forced boot order — the empty disk falls through to the CD once, then
+Windows Boot Manager wins. QEMU needs `qemu-system-x86 ovmf` and a user in the
+`kvm` group. ARM64 guests need an ARM64 host: Parallels or Fusion on Apple
+Silicon, or QEMU with KVM on an ARM Linux box (under TCG it's unusably slow).
 
 ## First boot
 

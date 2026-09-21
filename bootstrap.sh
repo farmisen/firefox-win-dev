@@ -7,6 +7,7 @@
 #   ./bootstrap.sh --arch x64 ( --setup-url https://raw.githubusercontent.com/<org>/firefox-win-dev/main
 #                             | --setup-file ./setup.ps1 ) \
 #                  [--username fxdev] [--key-file ~/.win11-pro.key] [--iso existing.iso] [--sidecar]
+#                  [--vm qemu|vmware|parallels]
 #
 #   --setup-url    first logon downloads setup.ps1 & co. from this URL
 #   --setup-file   embed this setup.ps1 (+ sibling fx-dev.winget, mozconfigs/) on
@@ -14,20 +15,24 @@
 #   --iso PATH     skip the download, use this ISO
 #   --sidecar      don't remaster; produce a tiny second ISO with the XML (and,
 #                  with --setup-file, the fxsetup folder)
+#   --vm HV        after building the media, create + start a VM on that
+#                  hypervisor (scripts/vm.sh); --vm-fresh recreates it from scratch
 #   Any other flag is passed through to scripts/build-autounattend.sh
 #   (--password is accepted but you'll be prompted if you omit it, which is
 #   the better habit).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 
-arch=x64 iso="" sidecar=0 setup_file="" render_args=()
+arch=x64 iso="" sidecar=0 setup_file="" vm="" vm_args=() render_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch)    arch=$2; render_args+=(--arch "$2"); shift 2;;
     --iso)     iso=$2; shift 2;;
     --sidecar) sidecar=1; shift;;
+    --vm)      vm=$2; shift 2;;
+    --vm-fresh) vm_args+=(--fresh); shift;;
     --setup-file) setup_file=$2; render_args+=(--setup-file "$2"); shift 2;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0;;
     *)         render_args+=("$1"); shift;;
   esac
 done
@@ -50,6 +55,12 @@ fi
 
 if (( sidecar )); then
   "$here/scripts/make-iso.sh" --sidecar "${embed[@]}"
+  # A sidecar is only useful next to the stock ISO, so a VM needs that too.
+  if [[ -n "$vm" ]]; then
+    iso=${iso:-$here/build/win11-$arch.iso}
+    [[ -f "$iso" ]] || "$here/scripts/fetch-iso.sh" --arch "$arch" --out "$iso"
+    exec "$here/scripts/vm.sh" --hypervisor "$vm" --arch "$arch" --iso "$iso" --sidecar "$here/build/autounattend-sidecar.iso" "${vm_args[@]}"
+  fi
   exit 0
 fi
 
@@ -58,4 +69,9 @@ if [[ -z "$iso" ]]; then
   [[ -f "$iso" ]] || "$here/scripts/fetch-iso.sh" --arch "$arch" --out "$iso"
 fi
 
-"$here/scripts/make-iso.sh" --iso "$iso" --out "$here/build/win11-$arch-unattended.iso" "${embed[@]}"
+out="$here/build/win11-$arch-unattended.iso"
+"$here/scripts/make-iso.sh" --iso "$iso" --out "$out" "${embed[@]}"
+
+if [[ -n "$vm" ]]; then
+  exec "$here/scripts/vm.sh" --hypervisor "$vm" --arch "$arch" --iso "$out" "${vm_args[@]}"
+fi
