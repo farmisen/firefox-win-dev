@@ -20,6 +20,7 @@ mozconfigs/                    debug (default) and opt
 
 ```bash
 sudo apt install p7zip-full genisoimage            # Linux host, once
+brew install p7zip cdrtools                        # macOS host, once
 
 # dev VM on this host (QEMU on Linux; Parallels/Fusion on macOS)
 ./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --vm

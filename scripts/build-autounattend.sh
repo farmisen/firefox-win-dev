@@ -90,7 +90,7 @@ fi
 [[ -n "$password" ]] || { echo "empty password not allowed (AutoLogon needs one)" >&2; exit 2; }
 
 # Windows Setup expects base64( UTF-16LE( password + "Password" ) ).
-pw_b64=$(printf '%s' "${password}Password" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)
+pw_b64=$(printf '%s' "${password}Password" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')
 
 key_setup="" key_specialize=""
 if [[ -n "$key" ]]; then

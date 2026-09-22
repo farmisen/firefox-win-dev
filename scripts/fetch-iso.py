@@ -16,7 +16,7 @@ anti-abuse layer ("Sentinel", error type 8/9) rate-limits link requests per
 IP, and once tripped it stays tripped for hours. If that happens, wait, use a
 different IP, or pass --url with a link obtained elsewhere.
 """
-import argparse, json, os, re, subprocess, sys, time, uuid, urllib.request, urllib.error
+import argparse, hashlib, json, os, re, subprocess, sys, time, uuid, urllib.request, urllib.error
 from urllib.parse import urlparse, parse_qs
 
 ORG_ID = "y6jn8c31"
@@ -175,7 +175,11 @@ def main():
     rc = subprocess.call(["curl", "-fL", "-C", "-", "--retry", "5", "--progress-bar", "-A", UA, "-o", out, url])
     if rc:
         raise SystemExit(f"curl failed ({rc}); re-run to resume")
-    sha = subprocess.run(["sha256sum", out], capture_output=True, text=True).stdout.split()[0]
+    h = hashlib.sha256()
+    with open(out, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    sha = h.hexdigest()
     print(f"sha256: {sha}")
     print("Compare once against the hash list at https://www.microsoft.com/software-download/windows11")
 

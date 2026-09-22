@@ -14,7 +14,8 @@
 #                       copies it to C:\fxsetup), /fxsetup on a sidecar. Pair with
 #                       an XML rendered via --setup-file.
 #
-# Requires: 7z (extract), genisoimage (author). Both are in Ubuntu's repos.
+# Requires: 7z or 7zz (extract) and genisoimage or mkisofs (author).
+#   Ubuntu: apt install p7zip-full genisoimage      macOS: brew install p7zip cdrtools
 # Output is UEFI-bootable (efisys_noprompt.bin, so a VM never waits for a key
 # press) and, when the source has boot/etfsboot.com (x64), BIOS-bootable too.
 set -euo pipefail
@@ -33,34 +34,45 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -f "$xml" ]] || { echo "missing $xml (run scripts/build-autounattend.sh first)" >&2; exit 2; }
-[[ -z "$fxsetup_dir" || -f "$fxsetup_dir/setup.ps1" ]] || { echo "--fxsetup-dir: $fxsetup_dir/setup.ps1 not found" >&2; exit 2; }
-command -v genisoimage >/dev/null || { echo "genisoimage not found (apt install genisoimage)" >&2; exit 1; }
+if [[ -n "$fxsetup_dir" ]]; then
+  for f in setup.ps1 fx-dev.winget mozconfigs/mozconfig.debug; do
+    [[ -f "$fxsetup_dir/$f" ]] || { echo "--fxsetup-dir: $fxsetup_dir/$f not found" >&2; exit 2; }
+  done
+fi
+if command -v genisoimage >/dev/null; then mkiso=genisoimage
+elif command -v mkisofs >/dev/null; then mkiso=mkisofs
+else echo "need genisoimage (apt install genisoimage) or mkisofs (brew install cdrtools)" >&2; exit 1; fi
+sevenzip=$(command -v 7z || command -v 7zz || true)
+
+# Only the pieces setup.ps1 needs travel to the media, whatever else lives in --fxsetup-dir
+# (a repo checkout with a multi-GB build/ next to it, say).
+copy_fxsetup() {  # $1 = destination dir
+  mkdir -p "$1/mozconfigs"
+  cp "$fxsetup_dir/setup.ps1" "$fxsetup_dir/fx-dev.winget" "$1/"
+  cp "$fxsetup_dir"/mozconfigs/mozconfig.* "$1/mozconfigs/"
+}
 
 if (( sidecar )); then
   out=${out:-$here/build/autounattend-sidecar.iso}
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   cp "$xml" "$tmp/Autounattend.xml"
-  [[ -n "$fxsetup_dir" ]] && cp -r "$fxsetup_dir" "$tmp/fxsetup"
-  genisoimage -quiet -J -r -V AUTOUNATTEND -o "$out" "$tmp"
+  [[ -n "$fxsetup_dir" ]] && copy_fxsetup "$tmp/fxsetup"
+  "$mkiso" -quiet -J -r -V AUTOUNATTEND -o "$out" "$tmp"
   echo "sidecar ISO -> $out  (attach as second CD-ROM alongside the stock Windows ISO)"
   exit 0
 fi
 
 [[ -f "$iso" ]] || { echo "--iso PATH is required for a remaster" >&2; exit 2; }
-command -v 7z >/dev/null || { echo "7z not found (apt install p7zip-full)" >&2; exit 1; }
+[[ -n "$sevenzip" ]] || { echo "7z not found (apt install p7zip-full / brew install p7zip)" >&2; exit 1; }
 base=$(basename "$iso" .iso)
 out=${out:-$here/build/$base-unattended.iso}
 
-work=$(mktemp -d -p "$here/build" extract.XXXXXX); trap 'rm -rf "$work"' EXIT
+work=$(mktemp -d "$here/build/extract.XXXXXX"); trap 'rm -rf "$work"' EXIT INT TERM
 echo "extracting $iso -> $work ..." >&2
-7z x -bso0 -bsp1 -o"$work" "$iso"
+"$sevenzip" x -bso0 -bsp1 -o"$work" "$iso"
 
 cp "$xml" "$work/Autounattend.xml"
-if [[ -n "$fxsetup_dir" ]]; then
-  dst="$work/sources/\$OEM\$/\$1/fxsetup"
-  mkdir -p "$dst"
-  cp -r "$fxsetup_dir"/. "$dst"/
-fi
+[[ -n "$fxsetup_dir" ]] && copy_fxsetup "$work/sources/\$OEM\$/\$1/fxsetup"
 
 boot_args=()
 if [[ -f "$work/boot/etfsboot.com" ]]; then
@@ -71,10 +83,12 @@ efi=efi/microsoft/boot/efisys_noprompt.bin
 [[ -f "$work/$efi" ]] || { echo "no EFI boot image found in ISO" >&2; exit 1; }
 boot_args+=(-e "$efi" -no-emul-boot)
 
-label=$(7z l -slt "$iso" 2>/dev/null | sed -n 's/^Label = //p' | head -n1)
+label=$("$sevenzip" l -slt "$iso" 2>/dev/null | sed -n 's/^Label = //p' | head -n1)
 echo "authoring $out ..." >&2
-genisoimage -quiet \
-  -udf -iso-level 3 -allow-limited-size -J -joliet-long -relaxed-filenames -D \
+# -allow-limited-size is genisoimage-only; with -iso-level 3 both tools take >4 GB files.
+limited=(); [[ $mkiso == genisoimage ]] && limited=(-allow-limited-size)
+"$mkiso" -quiet \
+  -udf -iso-level 3 "${limited[@]}" -J -joliet-long -relaxed-filenames -D \
   -V "${label:-WIN11_UNATTENDED}" \
   "${boot_args[@]}" \
   -o "$out" "$work"
