@@ -44,10 +44,11 @@ cd D:\src\firefox
 | `--setup-file ./setup.ps1` | embed this checkout's `setup.ps1` (+ `fx-dev.winget`, `mozconfigs/`) on the media |
 | `--setup-url URL` | fetch them at first logon instead, e.g. `https://raw.githubusercontent.com/farmisen/firefox-win-dev/main` |
 | `--product P` | `firefox` (default) and/or `enterprise-firefox`; repeat for both |
-| `--arch x64\|arm64` | Windows on ARM needs an ARM64 host (Apple Silicon, ARM Linux) |
-| `--key-file PATH` | Windows product key; omit to install unactivated |
+| `--arch x64\|arm64` | Windows on ARM needs an ARM64 host (Apple Silicon, ARM Linux). Windows 11 ARM has no inbox driver for VMware NICs; with `--setup-file` on a Mac that has Fusion, its vmxnet3 driver is staged into `fxsetup/drivers` and setup.ps1 installs it before touching the network |
+| `--key-file PATH` | Windows product key; omit to install unactivated (Microsoft's public generic KMS client key for the edition is fetched at render time so Setup never stops at the key page) |
+| `--allow-windows-update` | leave OS Windows Update auto-updates on; default off, so a build VM does not download/reboot mid-build. Store app auto-update is always off (it swaps winget mid-setup) |
 | `--username NAME` | local admin account (default `fxdev`; no spaces) |
-| `--vm [--hypervisor H] [--vm-fresh]` | start a VM after building; `H` = `qemu`, `vmware`, `parallels` (default from host) |
+| `--vm [--hypervisor H] [--vm-fresh]` | start a VM after building; `H` = `qemu`, `vmware`, `parallels` (default from host). On VMware the Tools ISO is attached as an extra CD and setup.ps1 installs it silently (reboot deferred) |
 | `--iso PATH` | reuse an ISO you already have |
 | `--sidecar` | tiny ISO with only the answer file, to attach next to a stock Windows ISO |
 
