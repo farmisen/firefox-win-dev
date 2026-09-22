@@ -5,6 +5,7 @@
   Idempotent. Run it on first logon (Autounattend does), or any time later to
   converge the machine. Every step checks before it acts.
 
+    0. drivers under .\drivers (pnputil); VMware Tools from the attached CD; wait until DNS answers
     1. winget up to date
     2. Dev Drive at D:  (RAW partition or RAW disk -> ReFS Dev Drive)
     3. winget configure -f fx-dev.winget
@@ -39,6 +40,66 @@ trap {
 try { Start-Transcript -Path (Join-Path $Here 'setup.log') -Append | Out-Null } catch {}   # everything below also lands in C:\fxsetup\setup.log
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 
+# --------------------------------------------------------------- 0. network
+Step 'drivers: install anything staged under .\drivers'
+# Windows 11 ARM has no inbox driver for VMware's virtual NICs; bootstrap.sh stages Fusion's
+# ARM64 vmxnet3 driver under .\drivers. Offer whatever is there to PnP. A driver that matches
+# no device just lands in the driver store (Parallels/QEMU NICs work with inbox drivers).
+$drivers = Join-Path $Here 'drivers'
+if (Test-Path $drivers) {
+    Get-ChildItem $drivers -Recurse -Filter *.inf | ForEach-Object {
+        Write-Host "  pnputil /add-driver $($_.FullName) /install"
+        pnputil /add-driver $_.FullName /install | Where-Object { $_ -match '\S' } | ForEach-Object { Write-Host "    $_" }
+    }
+}
+
+# ----------------------------------------------------------- 0b. guest tools
+Step 'guest tools: VMware Tools when this is a VMware guest without it'
+# vm.sh attaches the hypervisor's Tools ISO as an extra CD-ROM. Tools bring display resize,
+# clipboard, time sync and, for the host, vmrun guest operations (copy files, run commands).
+# REBOOT=R defers the reboot; what needs one (display driver) arrives at the next restart.
+$maker = (Get-CimInstance Win32_ComputerSystem).Manufacturer
+if ($maker -match 'VMware') {
+    if (Get-Service VMTools -ErrorAction SilentlyContinue) {
+        Write-Host '  VMware Tools already installed'
+    } else {
+        $toolsSetup = Get-Volume | Where-Object { $_.DriveType -eq 'CD-ROM' -and $_.DriveLetter } |
+            ForEach-Object { Join-Path "$($_.DriveLetter):\" 'setup.exe' } |
+            Where-Object { (Test-Path $_) -and ((Get-Item $_).VersionInfo.CompanyName -match 'VMware|Broadcom') } |
+            Select-Object -First 1
+        if ($toolsSetup) {
+            Write-Host "  installing VMware Tools from $toolsSetup (silent, reboot deferred)..."
+            $p = Start-Process $toolsSetup -ArgumentList '/S /v"/qn REBOOT=R"' -Wait -PassThru
+            if ($p.ExitCode -in 0, 3010) { Write-Host "  VMware Tools installed (exit $($p.ExitCode)); restart the VM when setup.ps1 is done" }
+            else { Write-Warning "VMware Tools setup exited $($p.ExitCode); continuing without Tools" }
+        } else {
+            Write-Host '  no VMware Tools CD attached; skipping (vm.sh attaches it when Fusion/Workstation ships it)'
+        }
+    }
+} elseif ($maker -match 'Parallels') {
+    Write-Host '  Parallels guest: install Parallels Tools from the host with  prlctl installtools <vm>'
+} else {
+    Write-Host "  not a VMware guest ($maker); nothing to do"
+}
+
+# ------------------------------------------------------------ 0c. network
+Step 'network: wait for DNS'
+# First logon fires before the network stack has finished identifying the connection, and the
+# Store (used by winget configure --enable) then fails with 0x80072ee7 "name not resolved".
+# Nothing below is worth attempting until DNS answers.
+function Test-Dns { [bool](Resolve-DnsName www.microsoft.com -DnsOnly -ErrorAction SilentlyContinue) }
+$deadline = (Get-Date).AddMinutes(5)
+while (-not (Test-Dns) -and (Get-Date) -lt $deadline) { Write-Host '  waiting for DNS...'; Start-Sleep -Seconds 5 }
+if (Test-Dns) {
+    Write-Host "  DNS ok via $((Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1).InterfaceDescription)"
+} else {
+    Write-Host '  network adapters:'
+    Get-NetAdapter | Format-Table Name, InterfaceDescription, Status | Out-Host
+    Write-Host '  PnP network-class devices not OK (a missing driver shows up here):'
+    Get-PnpDevice -Class Net -ErrorAction SilentlyContinue | Where-Object Status -ne 'OK' | Format-Table FriendlyName, Status, InstanceId | Out-Host
+    throw 'no DNS after 5 minutes: the VM has no working NIC (driver missing?) or the hypervisor network is down. Fix that, then re-run C:\fxsetup\setup.ps1'
+}
+
 # ---------------------------------------------------------------- 1. winget
 Step 'winget: ensure available and >= 1.11 (dscv3 processor)'
 function Find-WinGet {
@@ -52,11 +113,26 @@ function Find-WinGet {
     return $null
 }
 function Invoke-WinGet {
-    # The Store can auto-update App Installer mid-run, which moves the package directory and
-    # deletes the old one, so never cache the exe path: resolve it on every call.
-    $exe = Find-WinGet
-    if (-not $exe) { throw 'winget.exe vanished (App Installer update in progress?). Wait a minute and re-run C:\fxsetup\setup.ps1' }
-    & $exe @args
+    # The Store can auto-update App Installer mid-run: the package directory moves and winget.exe
+    # is briefly gone or unlaunchable ("Program 'winget.exe' failed to run: Access is denied").
+    # Enabling the configuration feature is itself what triggers that update, so the very next
+    # call often lands in the window. Resolve the path every call and retry through it. A normal
+    # non-zero EXIT does not throw, so it still passes back to the caller's $LASTEXITCODE check;
+    # only a failure to launch (throw) or a missing exe is retried.
+    for ($try = 1; $try -le 6; $try++) {
+        $exe = Find-WinGet
+        if ($exe) {
+            try { & $exe @args; return }
+            catch {
+                if ($try -ge 6) { throw }
+                Write-Warning ("winget.exe could not launch ({0}); App Installer may be updating, retry {1}/6 in 20s" -f $_.Exception.Message.Trim(), $try)
+            }
+        } else {
+            if ($try -ge 6) { throw 'winget.exe vanished (App Installer update in progress?). Wait a minute and re-run C:\fxsetup\setup.ps1' }
+            Write-Warning "winget.exe not found (App Installer update in progress?); retry $try/6 in 20s"
+        }
+        Start-Sleep -Seconds 20
+    }
 }
 function Get-WinGetVersion($exe) {
     $raw = (& $exe --version 2>$null | Select-Object -First 1) -replace '^v', ''

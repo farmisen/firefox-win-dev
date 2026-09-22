@@ -47,6 +47,10 @@ resources:
     name: ShowFileExtensions
     metadata:
       description: Explorer shows file extensions
+      # Elevated like the other Registry units: setup.ps1 runs configure elevated, and a
+      # default-context unit inside an elevated run makes winget split execution into a
+      # separate limited-privilege host, which fails. HKCU writes fine as the same user.
+      winget: { securityContext: elevated }
     properties:
       keyPath: HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced
       valueName: HideFileExt
