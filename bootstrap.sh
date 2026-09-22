@@ -56,6 +56,17 @@ if [[ -n "$setup_file" ]]; then
   cp "$setup_file" "$stage/setup.ps1"
   cp "$src_dir/fx-dev.winget" "$stage/"
   cp "$src_dir"/mozconfigs/mozconfig.* "$stage/mozconfigs/"
+  # Windows 11 ARM has no inbox driver for VMware's virtual NICs (e1000e included), so a
+  # Fusion guest has no network until VMware's own driver is in. Fusion ships a signed
+  # ARM64 vmxnet3 driver; setup.ps1 feeds everything under fxsetup/drivers to pnputil
+  # before it first needs the network. Harmless when the VM ends up on Parallels/QEMU,
+  # whose NICs work with inbox drivers.
+  fusion_drv="/Applications/VMware Fusion.app/Contents/Library/isoimages/arm64/drivers-arm64.zip"
+  if [[ $arch == arm64 && -f "$fusion_drv" ]]; then
+    mkdir -p "$stage/drivers/vmxnet3"
+    unzip -qj "$fusion_drv" 'vmxnet3/*/ARM64/vmxnet3.inf' 'vmxnet3/*/ARM64/vmxnet3.sys' 'vmxnet3/*/ARM64/vmxnet3.cat' -d "$stage/drivers/vmxnet3"
+    echo "staged VMware vmxnet3 ARM64 driver -> $stage/drivers/vmxnet3"
+  fi
   embed=(--fxsetup-dir "$stage")
 fi
 

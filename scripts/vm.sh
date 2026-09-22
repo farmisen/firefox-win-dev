@@ -121,6 +121,14 @@ run_vmware() {
   # guestOS: the Windows 10 type avoids Workstation's vTPM + encryption requirement for "windows11-64";
   # the answer file bypasses the TPM check, so it installs fine. ARM (Fusion on Apple Silicon) has one type.
   local guest=windows9-64; [[ $arch == arm64 ]] && guest=arm-windows11-64
+  # VMware Tools installer, attached as one more CD-ROM for setup.ps1's guest-tools step
+  # (Windows Setup ignores a CD without an answer file). Fusion ships one per arch;
+  # Workstation on Linux has x64 only.
+  local tools_iso="" tools_arch=x86_x64; [[ $arch == arm64 ]] && tools_arch=arm64
+  for t in "/Applications/VMware Fusion.app/Contents/Library/isoimages/$tools_arch/windows.iso" /usr/lib/vmware/isoimages/windows.iso; do
+    if [[ -f $t ]]; then tools_iso=$t; break; fi
+  done
+  [[ -n "$tools_iso" ]] || echo "warning: VMware Tools ISO not found; guest gets no Tools (display resize, clipboard, vmrun guest ops)" >&2
   {
     echo '.encoding = "UTF-8"'; echo 'config.version = "8"'; echo 'virtualHW.version = "20"'
     echo "displayName = \"$name\""; echo "guestOS = \"$guest\""; echo 'firmware = "efi"'
@@ -135,7 +143,11 @@ run_vmware() {
     echo 'sata0:0.present = "TRUE"'; echo 'sata0:0.fileName = "disk.vmdk"'
     echo 'sata0:1.present = "TRUE"'; echo 'sata0:1.deviceType = "cdrom-image"'; echo "sata0:1.fileName = \"$iso\""; echo 'sata0:1.startConnected = "TRUE"'
     if [[ -n "$sidecar" ]]; then echo 'sata0:2.present = "TRUE"'; echo 'sata0:2.deviceType = "cdrom-image"'; echo "sata0:2.fileName = \"$sidecar\""; echo 'sata0:2.startConnected = "TRUE"'; fi
-    echo 'ethernet0.present = "TRUE"'; echo 'ethernet0.connectionType = "nat"'; echo 'ethernet0.virtualDev = "e1000e"'; echo 'ethernet0.addressType = "generated"'
+    if [[ -n "$tools_iso" ]]; then echo 'sata0:3.present = "TRUE"'; echo 'sata0:3.deviceType = "cdrom-image"'; echo "sata0:3.fileName = \"$tools_iso\""; echo 'sata0:3.startConnected = "TRUE"'; fi
+    # Windows 11 ARM has no inbox driver for e1000e (x64 does). Fusion's ARM guests use vmxnet3
+    # with VMware's driver, which bootstrap.sh stages under fxsetup/drivers for setup.ps1 to install.
+    local nic=e1000e; [[ $arch == arm64 ]] && nic=vmxnet3
+    echo 'ethernet0.present = "TRUE"'; echo 'ethernet0.connectionType = "nat"'; echo "ethernet0.virtualDev = \"$nic\""; echo 'ethernet0.addressType = "generated"'
     echo 'usb.present = "TRUE"'; echo 'usb_xhci.present = "TRUE"'; echo 'svga.autodetect = "TRUE"'
     echo 'msg.autoAnswer = "TRUE"'   # no modal dialogs on first start
   } > "$vmx"
@@ -150,8 +162,10 @@ run_parallels() {
     prlctl stop "$name" --kill >/dev/null 2>&1 || true; prlctl delete "$name" >/dev/null
   fi
   if ! prlctl list -a --no-header -o name | grep -qx "$name"; then
-    prlctl create "$name" --ostype win-11 >/dev/null
-    prlctl set "$name" --cpus "$cpus" --memsize "$ram_mb" --efi-boot on >/dev/null
+    # --ostype takes only a family (windows); the version goes in --distribution.
+    prlctl create "$name" --distribution win-11 >/dev/null
+    local bios=efi64; [[ $arch == arm64 ]] && bios=efi-arm64
+    prlctl set "$name" --cpus "$cpus" --memsize "$ram_mb" --bios-type "$bios" >/dev/null
     prlctl set "$name" --device-set hdd0 --size "$(( disk_gb * 1024 ))" >/dev/null
     prlctl set "$name" --device-set cdrom0 --image "$iso" --connect >/dev/null
     [[ -n "$sidecar" ]] && prlctl set "$name" --device-add cdrom --image "$sidecar" --connect >/dev/null
@@ -159,7 +173,12 @@ run_parallels() {
     prlctl set "$name" --device-set net0 --type shared >/dev/null 2>&1 || true
   fi
   echo "if it re-enters Setup after the first reboot: prlctl set $name --device-set cdrom0 --disconnect" >&2
-  exec prlctl start "$name"
+  # prlctl start alone runs the VM headless when the Parallels Desktop app is not
+  # open. Launch the app first, then open the VM bundle so its console window shows.
+  home=$(prlctl list -i "$name" | sed -n 's/^Home: //p')
+  open -a "Parallels Desktop" 2>/dev/null || true
+  prlctl start "$name"
+  [[ -n "$home" ]] && open "$home" 2>/dev/null || true
 }
 
 case "$hv" in

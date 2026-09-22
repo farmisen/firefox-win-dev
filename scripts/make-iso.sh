@@ -50,6 +50,8 @@ copy_fxsetup() {  # $1 = destination dir
   mkdir -p "$1/mozconfigs"
   cp "$fxsetup_dir/setup.ps1" "$fxsetup_dir/fx-dev.winget" "$1/"
   cp "$fxsetup_dir"/mozconfigs/mozconfig.* "$1/mozconfigs/"
+  # Optional NIC/other drivers setup.ps1 installs with pnputil (bootstrap.sh stages them).
+  if [[ -d "$fxsetup_dir/drivers" ]]; then cp -R "$fxsetup_dir/drivers" "$1/"; fi
 }
 
 if (( sidecar )); then
@@ -81,7 +83,10 @@ fi
 efi=efi/microsoft/boot/efisys_noprompt.bin
 [[ -f "$work/$efi" ]] || efi=efi/microsoft/boot/efisys.bin
 [[ -f "$work/$efi" ]] || { echo "no EFI boot image found in ISO" >&2; exit 1; }
-boot_args+=(-e "$efi" -no-emul-boot)
+# genisoimage spells an EFI boot entry -e; cdrtools mkisofs (Homebrew) has no -e and
+# wants -eltorito-platform efi before the -b of that entry instead.
+if [[ $mkiso == genisoimage ]]; then boot_args+=(-e "$efi" -no-emul-boot)
+else boot_args+=(-eltorito-platform efi -b "$efi" -no-emul-boot); fi
 
 label=$("$sevenzip" l -slt "$iso" 2>/dev/null | sed -n 's/^Label = //p' | head -n1)
 echo "authoring $out ..." >&2
