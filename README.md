@@ -93,7 +93,16 @@ own reuse.
 ## Notes
 
 `setup.ps1` skips what is already done: re-run it any time, also with other
-arguments (`C:\fxsetup\setup.ps1 -Products enterprise-firefox`).
+arguments (`C:\fxsetup\setup.ps1 -Products enterprise-firefox`). On a box where
+setup never got as far as step 5 the execution policy is still `Restricted`, so
+launch it the way first logon does:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\fxsetup\setup.ps1 -Products enterprise-firefox
+```
+
+Guest tools install last and defer their reboot, so the console goes black at
+the very end of a run. That is expected: restart and it comes back.
 
 The disk layout expects one disk >= 220 GB (partition 4 is left RAW and becomes
 the Dev Drive).
