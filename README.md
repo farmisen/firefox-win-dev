@@ -80,9 +80,15 @@ toolchain-only VM and export it:
 ./bootstrap.sh --arch arm64 --setup-file ./setup.ps1 --skip-tree --vm
 
 # after first-logon setup finishes, package it
-scripts/export-vm.sh --hypervisor vmware              # your own reuse: an .ova
-scripts/export-vm.sh --hypervisor vmware --sysprep    # to share: new machine SID, runs OOBE
+scripts/export-vm.sh --hypervisor vmware                      # your own reuse: an .ova
+scripts/export-vm.sh --hypervisor vmware --zero               # smaller: zero free space first
+scripts/export-vm.sh --hypervisor vmware --zero --sysprep     # to share: also new machine SID
 ```
+
+Restart the VM before exporting: guest tools defer their reboot, and an image
+captured with that pending boots to a black console. `--zero` runs sdelete
+inside the guest so the disk actually compacts, since deleting files only
+unlinks them and leaves the old blocks on the virtual disk.
 
 Each recipient imports the artifact and runs `C:\fxsetup\setup.ps1` (no
 `-SkipTree`) to clone Firefox on their own copy. Export one artifact per
