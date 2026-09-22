@@ -1,154 +1,100 @@
 # firefox-win-dev
 
-Reproducible Windows 11 setup for native Firefox development (x64 and ARM64),
-identical for VMs and bare metal. Companion to `firefox-win64-cross-toolchain`:
-that one builds Windows Firefox *from* Linux; this one stands up a Windows box
-that builds it natively with a fast iteration loop.
+Unattended, reproducible Windows 11 machine for native Firefox development, in a
+VM (QEMU, VMware, Parallels) or on bare metal. One command builds the install
+media; the machine installs itself, then clones and bootstraps the tree(s).
 
 ```
-bootstrap.sh                   one shot: render XML + fetch ISO + remaster  (Linux/macOS host)
-scripts/build-autounattend.sh  Autounattend.template.xml -> build/Autounattend.xml
-scripts/fetch-iso.sh           official Win11 ISO from Microsoft (stdlib Python port of Fido's API calls)
-scripts/make-iso.sh            put the XML at the ISO root, or build a sidecar ISO
-scripts/vm.sh                  create + start a Windows dev VM: qemu | vmware | parallels
+bootstrap.sh                   build the media (and optionally start a VM)
+scripts/vm.sh                  create + start a dev VM: qemu | vmware | parallels
+scripts/fetch-iso.sh           official Windows 11 ISO from Microsoft
+scripts/make-iso.sh            remaster the ISO with the answer file, or build a sidecar ISO
+scripts/build-autounattend.sh  render Autounattend.template.xml
 Autounattend.template.xml      OS install, disk layout, local account, first-logon hook
-setup.ps1                      idempotent converge script, runs on the Windows box
-fx-dev.winget                  declarative machine state (WinGet Configuration, DSC v3)
-mozconfigs/                    debug (default loop) and opt (investigations)
+setup.ps1                      runs on the Windows box; idempotent, re-run any time
+fx-dev.winget                  tools + OS settings (WinGet Configuration)
+mozconfigs/                    debug (default) and opt
 ```
 
-## Build the install media (on your Linux host)
+## Quick start
 
 ```bash
-sudo apt install p7zip-full genisoimage        # once
+sudo apt install p7zip-full genisoimage            # Linux host, once
 
-# A) first logon pulls setup.ps1 & co. from the repo (needs the remote to exist)
-./bootstrap.sh --arch x64 \
-  --setup-url https://raw.githubusercontent.com/<org>/firefox-win-dev/main \
-  --key-file ~/.win11-pro.key                  # optional; omit to install unlicensed
+# dev VM on this host (QEMU on Linux; Parallels/Fusion on macOS)
+./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --vm
 
-# B) embed this checkout's setup.ps1 (+ fx-dev.winget, mozconfigs/) on the media
-./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --key-file ~/.win11-pro.key
-
-# which tree(s) the box gets: firefox (default), enterprise-firefox, or both
-./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --product enterprise-firefox
-./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --product firefox --product enterprise-firefox
-```
-
-Each product is cloned to `D:\src\<product>` with its own generated `mozconfig`
-(the chosen template plus, for enterprise-firefox, `build/win64/mozconfig.enterprise`);
-toolchains and sccache are shared. On an existing box: `C:\fxsetup\setup.ps1 -Products enterprise-firefox`.
-
-Exactly one of `--setup-url` / `--setup-file` is required. Both prompt for the
-local account password and write `build/win11-x64-unattended.iso`. B is what
-you want while iterating on `setup.ps1` (no push per try) and for machines
-without network at first logon; A is what you want for a shared, pinned URL.
-
-`--arch arm64` for Windows on ARM VMs/machines. `--iso path.iso` reuses an ISO
-you already have. `--sidecar` skips the 6 GB remaster and produces a tiny ISO
-holding the XML (and, with `--setup-file`, the `fxsetup` folder): attach it as
-a **second** CD-ROM next to the stock Windows ISO in a VM (Setup scans every
-removable root for `Autounattend.xml`; the first-logon hook scans every drive
-for `fxsetup\setup.ps1`).
-
-Secrets never touch the tree: the password is prompted (or `FXWD_PASSWORD`),
-the key comes from `--key-file` / `FXWD_PRODUCT_KEY`, and everything rendered
-is under `build/` (gitignored, mode 600). The XML stores the password
-base64-obfuscated, not encrypted; treat the ISO accordingly.
-
-## Testing the media locally (QEMU/KVM, x64)
-
-Layer by layer, cheapest first:
-
-```bash
-# 1. Rendering only -- seconds. Inspect build/Autounattend.xml by eye.
-FXWD_PASSWORD=test ./scripts/build-autounattend.sh --setup-file ./setup.ps1
-
-# 2. Media assembly without the 6 GB download -- ~1 s.
-./scripts/make-iso.sh --sidecar --fxsetup-dir .   # or: ./bootstrap.sh --sidecar --setup-file ./setup.ps1
-
-# 3. Full media (downloads the ISO once; reused afterwards).
+# bare metal: same media on a USB stick (it wipes disk 0 of the machine it boots)
 ./bootstrap.sh --arch x64 --setup-file ./setup.ps1
-
-# 4. Boot it. Unattended install ~10 min, then setup.ps1 + mach bootstrap ~30-60 min.
-#    This is not a test-only VM: with the default sizing (half the host's cores and RAM)
-#    it is a usable daily Firefox development machine for anyone without Windows hardware.
-./scripts/vm.sh                                 # QEMU/KVM on Linux; window if $DISPLAY, else VNC :5900
-./scripts/vm.sh --hypervisor vmware             # VMware Workstation / Fusion (via vmrun)
-./scripts/vm.sh --hypervisor parallels          # Parallels Desktop (macOS; needs --arch arm64 media)
-./scripts/vm.sh --fresh                         # destroy the VM and reinstall
-./scripts/vm.sh --name enterprise --cpus 16 --ram 32G   # a second, bigger VM alongside
-./scripts/vm.sh --iso build/win11-x64.iso --sidecar build/autounattend-sidecar.iso
-
-# ...or in one go: build the media and start the VM
-./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --vm                       # host default
-./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --vm --hypervisor vmware
 ```
 
-What "pass" looks like: Setup never asks a question, reboots into the `fxdev`
-desktop on its own, a PowerShell window runs `setup.ps1`, `D:` shows up as a
-Dev Drive, and after the final reboot `cd D:\src\firefox; .\mach.ps1 build` starts
-compiling. What to watch for on a first run: the disk-layout step (partition 4
-left RAW), the first reboot (must come from the disk, not the CD -- see notes in
-`vm.sh`), and the winget/MozillaBuild steps in `setup.ps1`.
-
-`vm.sh` picks the hypervisor from the host when `--hypervisor` is omitted (QEMU on
-Linux; Parallels, else VMware Fusion, on macOS). All backends use the same shape:
-UEFI, SATA disk + CD (stock Windows has those drivers), e1000e NAT, no TPM, and
-no forced boot order — the empty disk falls through to the CD once, then
-Windows Boot Manager wins. QEMU needs `qemu-system-x86 ovmf` and a user in the
-`kvm` group. ARM64 guests need an ARM64 host: Parallels or Fusion on Apple
-Silicon, or QEMU with KVM on an ARM Linux box (under TCG it's unusably slow).
-
-## First boot
-
-1. Boot the ISO (UEFI). Walk away (~45–90 min incl. the first `mach bootstrap`
-   toolchain download).
-2. Reboot once, then `cd D:\src\firefox; .\mach.ps1 build`.
-
-VM: give disk 0 >= 220 GB, **or** a second disk >= 100 GB and set
-`Extend=true` on partition 3 / drop partition 4 in the XML.
-Bare metal: same XML on a USB; it wipes disk 0.
-
-## Reconverge / drift
-
-```powershell
-.\setup.ps1                          # everything, skips what's already done
-winget configure test -f fx-dev.winget   # report drift only
-```
-
-## Reviewing other people's work without touching your tree
+You are asked for the local account password; everything else is unattended.
+About 10 minutes to the desktop, then 30-60 minutes of `setup.ps1` (tools, Dev
+Drive, clone, `mach bootstrap`). Reboot once, then:
 
 ```powershell
 cd D:\src\firefox
-git worktree add ..\fx-pr-1234 main
-cd ..\fx-pr-1234
-gh pr checkout 1234
-Copy-Item ..\..\firefox-win-dev\mozconfigs\mozconfig.debug .\mozconfig
-.\mach.ps1 build       # its own obj-debug, shares sccache with the main tree
+.\mach.ps1 build
 ```
 
-## Design notes
+## Options
 
-* **Dev Drive (ReFS) for `src`, objdirs, `.mozbuild`, sccache.** Defender runs in
-  performance mode there; only the C: bits get explicit exclusions.
-* **No Visual Studio install.** `mach bootstrap` fetches the pinned MSVC + SDK
-  bundle (same hydration the cross toolchain does). Build Tools is commented
-  out in `fx-dev.winget` for people who want the debugger UI.
-* **MozillaBuild is the one imperative install.** Not in winget; `setup.ps1`
-  handles it with a presence check.
-* **mach from PowerShell** (`mach.ps1`) is what the script uses; it's still
-  documented as experimental upstream. If it misbehaves, run the same
-  `bootstrap`/`build` from `C:\mozilla-build\start-shell.bat`.
+| flag | |
+|---|---|
+| `--setup-file ./setup.ps1` | embed this checkout's `setup.ps1` (+ `fx-dev.winget`, `mozconfigs/`) on the media |
+| `--setup-url URL` | instead, fetch them at first logon from a raw URL (e.g. `https://raw.githubusercontent.com/<org>/firefox-win-dev/main`) |
+| `--product P` | `firefox` (default) and/or `enterprise-firefox`; repeat for both |
+| `--arch x64\|arm64` | Windows on ARM needs an ARM64 host (Apple Silicon, ARM Linux) |
+| `--key-file PATH` | Windows product key; omit to install unactivated |
+| `--username NAME` | local admin account (default `fxdev`; no spaces, the build breaks on them) |
+| `--vm [--hypervisor H] [--vm-fresh]` | start a VM after building; `H` = `qemu`, `vmware`, `parallels` (default from host) |
+| `--iso PATH` | reuse an ISO you already have |
+| `--sidecar` | tiny ISO with only the answer file, to attach next to a stock Windows ISO |
 
-## Things to verify once on a real machine
+`vm.sh` takes `--name`, `--cpus`, `--ram`, `--disk` (defaults: half the host's
+cores and RAM, 260 GB sparse disk) and `--fresh`. Several VMs can coexist.
 
-* `fetch-iso.py`: the request sequence is ported from Fido and Microsoft can
-  change it; edition ids are read from Fido.ps1 at run time so releases roll
-  over without edits. Compare the printed SHA-256 with the download page once.
-* `make-iso.sh`: boots in your hypervisor of choice (genisoimage `-udf -iso-level 3`
-  is the standard Win11 remaster recipe, but check once).
-* winget package IDs (`winget search`), MozillaBuild `/S` silent flag.
-* Partition 4 is seen as RAW by `Get-Partition` after setup (Candidate A in
-  `setup.ps1`); otherwise the second-disk path (Candidate B) is the fallback.
-* The exact `mach bootstrap` application-choice string for your tree revision.
+Secrets stay out of the tree: password prompted (or `FXWD_PASSWORD`), key from
+`--key-file` (or `FXWD_PRODUCT_KEY`), rendered files under gitignored `build/`.
+The answer file stores the password base64-obfuscated, not encrypted.
+
+## What you get
+
+- `D:` is a Dev Drive (ReFS): `D:\src\<product>`, `D:\.mozbuild` (toolchains), `D:\sccache`
+- Git, Python, PowerShell 7, Windows Terminal, VS Code, WinDbg, GitHub CLI, MozillaBuild
+- long paths, Developer Mode, `RemoteSigned` execution policy, Defender exclusions
+- per product: a clone (enterprise-firefox on `enterprise-main`) with a generated
+  `mozconfig` (template + `build/win64/mozconfig.enterprise` for enterprise), bootstrapped
+
+No Visual Studio: `mach bootstrap` fetches the pinned MSVC + SDK bundle.
+Work from PowerShell (`.\mach.ps1 ...`) or MozillaBuild's bash
+(`C:\mozilla-build\start-shell.bat`); both use the same tree and caches.
+
+## Re-running / iterating on setup.ps1
+
+`setup.ps1` checks before every step, so it can be re-run at any time, also
+with other arguments (`C:\fxsetup\setup.ps1 -Products enterprise-firefox`).
+To test a change without reinstalling, serve the repo from the host and pull it
+into the VM:
+
+```bash
+python3 -m http.server 8000          # on the host, in this repo
+```
+```powershell
+irm http://<host>:8000/setup.ps1 -OutFile C:\fxsetup\setup.ps1
+C:\fxsetup\setup.ps1
+```
+
+`<host>` from inside the guest: QEMU `10.0.2.2`, VMware `.1` of the vmnet8
+subnet (`ipconfig` shows the gateway `.2`; the host is `.1`), Parallels
+`10.211.55.2`. `winget configure test -f C:\fxsetup\fx-dev.winget` reports drift.
+
+## Status
+
+Verified end to end on Windows 11 25H2 x64 with QEMU/KVM and VMware Workstation
+on Linux, through `mach build`. Not yet exercised: ARM64 media, Parallels,
+`--setup-url` mode, bare metal.
+
+Disk layout expects a single disk >= 220 GB (partition 4 is left RAW and becomes
+the Dev Drive). For a VM with two disks, set `Extend=true` on partition 3 and drop
+partition 4 in the template; the RAW second disk is picked up instead.
