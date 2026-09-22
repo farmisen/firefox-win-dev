@@ -10,7 +10,7 @@ bootstrap.sh                   one shot: render XML + fetch ISO + remaster  (Lin
 scripts/build-autounattend.sh  Autounattend.template.xml -> build/Autounattend.xml
 scripts/fetch-iso.sh           official Win11 ISO from Microsoft (stdlib Python port of Fido's API calls)
 scripts/make-iso.sh            put the XML at the ISO root, or build a sidecar ISO
-scripts/vm.sh                  create + start a throwaway VM: qemu | vmware | parallels
+scripts/vm.sh                  create + start a Windows dev VM: qemu | vmware | parallels
 Autounattend.template.xml      OS install, disk layout, local account, first-logon hook
 setup.ps1                      idempotent converge script, runs on the Windows box
 fx-dev.winget                  declarative machine state (WinGet Configuration, DSC v3)
@@ -71,10 +71,13 @@ FXWD_PASSWORD=test ./scripts/build-autounattend.sh --setup-file ./setup.ps1
 ./bootstrap.sh --arch x64 --setup-file ./setup.ps1
 
 # 4. Boot it. Unattended install ~10 min, then setup.ps1 + mach bootstrap ~30-60 min.
+#    This is not a test-only VM: with the default sizing (half the host's cores and RAM)
+#    it is a usable daily Firefox development machine for anyone without Windows hardware.
 ./scripts/vm.sh                                 # QEMU/KVM on Linux; window if $DISPLAY, else VNC :5900
 ./scripts/vm.sh --hypervisor vmware             # VMware Workstation / Fusion (via vmrun)
 ./scripts/vm.sh --hypervisor parallels          # Parallels Desktop (macOS; needs --arch arm64 media)
 ./scripts/vm.sh --fresh                         # destroy the VM and reinstall
+./scripts/vm.sh --name enterprise --cpus 16 --ram 32G   # a second, bigger VM alongside
 ./scripts/vm.sh --iso build/win11-x64.iso --sidecar build/autounattend-sidecar.iso
 
 # ...or in one go: build the media and start the VM

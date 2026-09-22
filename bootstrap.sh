@@ -21,7 +21,7 @@
 #   --vm           after building the media, create + start a VM (scripts/vm.sh)
 #   --hypervisor   qemu|vmware|parallels for --vm; default picked from the host
 #                  (qemu on Linux, parallels then vmware on macOS), like vm.sh
-#   --vm-fresh     destroy an existing test VM first
+#   --vm-fresh     destroy an existing VM of that name first
 #   Any other flag is passed through to scripts/build-autounattend.sh
 #   (--password is accepted but you'll be prompted if you omit it, which is
 #   the better habit).

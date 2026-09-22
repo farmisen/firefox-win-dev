@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # firefox-win-dev / scripts/vm.sh
 #
-# Create (once) and start a throwaway VM that boots the install media, on the
-# hypervisor of your choice. Same knobs everywhere; the backend translates.
+# Create (once) and start a Windows 11 development VM from the install media, on
+# the hypervisor of your choice. Same knobs everywhere; the backend translates.
+# The result is a full dev machine (Dev Drive, toolchains, tree) for anyone
+# without Windows hardware, not just a place to test the media.
 #
 #   --hypervisor qemu|vmware|parallels   (default: qemu on Linux, parallels on
 #                                         macOS if prlctl exists, else vmware)
@@ -11,7 +13,10 @@
 #   --iso PATH            default build/win11-<arch>-unattended.iso
 #   --sidecar PATH        attach a 2nd CD (build/autounattend-sidecar.iso with
 #                         the *stock* ISO on --iso)
-#   --disk 260G  --ram 8G  --cpus 8
+#   --name NAME           VM name / directory (default firefox-win-dev); several can coexist
+#   --disk 260G           virtual disk (the answer file's layout needs >= 220G; sparse)
+#   --cpus N  --ram SIZE  default: half the host's cores (min 4) and half its RAM
+#                         (8G..32G); a Firefox build wants all it can get
 #   --fresh               destroy the VM (disk, NVRAM, config) and start over
 #   --vnc                 qemu only: force headless VNC on 127.0.0.1:5900
 #
@@ -26,11 +31,12 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
-name=firefox-win-dev-test
-hv="" arch=x64 iso="" sidecar="" disk=260G ram=8G cpus=8 fresh=0 vnc=0
+name=firefox-win-dev
+hv="" arch=x64 iso="" sidecar="" disk=260G ram="" cpus="" fresh=0 vnc=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --hypervisor) hv=$2; shift 2;;
+    --name) name=$2; shift 2;;
     --arch) arch=$2; shift 2;;
     --iso) iso=$2; shift 2;;
     --sidecar) sidecar=$2; shift 2;;
@@ -39,7 +45,7 @@ while [[ $# -gt 0 ]]; do
     --cpus) cpus=$2; shift 2;;
     --fresh) fresh=1; shift;;
     --vnc) vnc=1; shift;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -58,10 +64,19 @@ fi
 iso=$(cd "$(dirname "$iso")" && pwd)/$(basename "$iso")
 [[ -n "$sidecar" ]] && sidecar=$(cd "$(dirname "$sidecar")" && pwd)/$(basename "$sidecar")
 
+# Sizing defaults from the host: half the cores (>= 4), half the RAM clamped to 8..32 GB.
+if [[ -z "$cpus" ]]; then
+  n=$(nproc 2>/dev/null || sysctl -n hw.ncpu); cpus=$(( n / 2 )); (( cpus < 4 )) && cpus=4
+fi
+if [[ -z "$ram" ]]; then
+  if [[ $os == Darwin ]]; then host_gb=$(( $(sysctl -n hw.memsize) / 1073741824 )); else host_gb=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1048576 )); fi
+  g=$(( host_gb / 2 )); (( g < 8 )) && g=8; (( g > 32 )) && g=32; ram="${g}G"
+fi
+
 # 260G -> 260 (GB) / 266240 (MB) for tools that want integers
 disk_gb=${disk%[GgBb]}; disk_gb=${disk_gb%[Gg]}
 ram_mb=$(( ${ram%[GgBb]} * 1024 )); [[ $ram == *[Mm]* ]] && ram_mb=${ram%[Mm]*}
-dir="$here/build/vm/$hv"
+dir="$here/build/vm/$hv/$name"
 
 run_qemu() {
   local bin=qemu-system-x86_64 code=/usr/share/OVMF/OVMF_CODE_4M.fd vars=/usr/share/OVMF/OVMF_VARS_4M.fd machine="q35" cpu="host" accel=(-enable-kvm)
