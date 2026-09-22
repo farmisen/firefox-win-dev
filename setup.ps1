@@ -224,8 +224,18 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
     Write-Warning "winget configure --enable exited $LASTEXITCODE (attempt $attempt/3); retrying in 20s"
     Start-Sleep -Seconds 20
 }
-Invoke-WinGet configure -f (Join-Path $Here 'fx-dev.winget') --accept-configuration-agreements --disable-interactivity
-if ($LASTEXITCODE -ne 0) { throw "winget configure failed ($LASTEXITCODE)" }
+# Applying is declarative and idempotent: a unit already in the desired state is a no-op, so a
+# retry only re-attempts what did not take. Individual package units fail transiently often
+# enough (a flaky download, a Store hiccup, "Fast Cache data not found" out of the winget
+# resource) that one bad unit should not sink a 40-minute provision. Converge, then insist.
+$cfg = Join-Path $Here 'fx-dev.winget'
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    Invoke-WinGet configure -f $cfg --accept-configuration-agreements --disable-interactivity
+    if ($LASTEXITCODE -eq 0) { break }
+    if ($attempt -eq 3) { throw "winget configure still failing after $attempt attempts ($LASTEXITCODE); see the unit marked [FAIL] above" }
+    Write-Warning "winget configure exited $LASTEXITCODE (attempt $attempt/3); re-applying only what did not take, in 30s"
+    Start-Sleep -Seconds 30
+}
 # Refresh PATH so git/python from this session are visible below.
 $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
 
