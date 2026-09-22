@@ -15,6 +15,8 @@
 #                  the media instead; no network needed until setup.ps1 itself runs
 #   --product P    tree(s) to clone + bootstrap on the box: firefox (default) and/or
 #                  enterprise-firefox; repeat the flag for both
+#   --skip-tree    provision the toolchain but do not clone Firefox: a lean box to
+#                  snapshot and share with scripts/export-vm.sh
 #   --iso PATH     skip the download, use this ISO
 #   --sidecar      don't remaster; produce a tiny second ISO with the XML (and,
 #                  with --setup-file, the fxsetup folder)
@@ -38,7 +40,7 @@ while [[ $# -gt 0 ]]; do
     --hypervisor) vm_args+=(--hypervisor "$2"); shift 2;;
     --vm-fresh) vm_args+=(--fresh); shift;;
     --setup-file) setup_file=$2; render_args+=(--setup-file "$2"); shift 2;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0;;
+    -h|--help) sed -n '2,27p' "$0"; exit 0;;
     *)         render_args+=("$1"); shift;;
   esac
 done

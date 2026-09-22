@@ -19,6 +19,8 @@
 #   --allow-windows-update    leave Windows Update auto-updates on (default: off, so the
 #                             OS does not download/reboot mid-build). Store app auto-update
 #                             is always disabled either way (it swaps winget under setup).
+#   --skip-tree               provision the toolchain but do not clone Firefox (setup.ps1
+#                             -SkipTree): a lean box to snapshot/share via export-vm.sh
 #   --computer-name NAME      (default fx-win11-<arch>)
 #   --edition NAME            image name in install.wim (default "Windows 11 Pro")
 #   --out PATH                (default build/Autounattend.xml)
@@ -34,6 +36,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 arch=x64 username=fxdev password="${FXWD_PASSWORD:-}" key="${FXWD_PRODUCT_KEY:-}"
 setup_url="${FXWD_SETUP_URL:-}" setup_file="${FXWD_SETUP_FILE:-}" computer_name="" edition="Windows 11 Pro"
 allow_windows_update=${FXWD_ALLOW_WINDOWS_UPDATE:-0}
+skip_tree=${FXWD_SKIP_TREE:-0}
 products=()
 out="$here/build/Autounattend.xml"
 
@@ -47,10 +50,11 @@ while [[ $# -gt 0 ]]; do
     --setup-file)    setup_file=$2; shift 2;;
     --product)       products+=("$2"); shift 2;;
     --allow-windows-update) allow_windows_update=1; shift;;
+    --skip-tree)     skip_tree=1; shift;;
     --computer-name) computer_name=$2; shift 2;;
     --edition)       edition=$2; shift 2;;
     --out)           out=$2; shift 2;;
-    -h|--help)       sed -n '2,30p' "$0"; exit 0;;
+    -h|--help)       sed -n '2,32p' "$0"; exit 0;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -69,6 +73,9 @@ done
 products_csv=$(IFS=,; echo "${products[*]}")
 # setup.ps1 arguments appended to the elevated -File invocation in the first-logon command
 setup_args="-Products $products_csv"
+# Provision the toolchain but stop before cloning: yields a lean, clone-free box to snapshot
+# and share (scripts/export-vm.sh). Each user clones Firefox on their own copy.
+[[ "$skip_tree" == 1 ]] && setup_args="$setup_args -SkipTree"
 
 if [[ -n "$setup_url" && -n "$setup_file" ]]; then
   echo "--setup-url and --setup-file are mutually exclusive" >&2; exit 2

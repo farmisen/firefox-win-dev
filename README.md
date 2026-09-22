@@ -10,6 +10,7 @@ scripts/vm.sh                  create + start a dev VM: qemu | vmware | parallel
 scripts/fetch-iso.sh           official Windows 11 ISO from Microsoft
 scripts/make-iso.sh            remaster the ISO with the answer file, or build a sidecar ISO
 scripts/build-autounattend.sh  render Autounattend.template.xml
+scripts/export-vm.sh           package a provisioned VM into one portable artifact
 Autounattend.template.xml      OS install, disk layout, local account, first-logon hook
 setup.ps1                      runs on the Windows box; idempotent, re-run any time
 fx-dev.winget                  tools + OS settings (WinGet Configuration)
@@ -44,6 +45,7 @@ cd D:\src\firefox
 | `--setup-file ./setup.ps1` | embed this checkout's `setup.ps1` (+ `fx-dev.winget`, `mozconfigs/`) on the media |
 | `--setup-url URL` | fetch them at first logon instead, e.g. `https://raw.githubusercontent.com/farmisen/firefox-win-dev/main` |
 | `--product P` | `firefox` (default) and/or `enterprise-firefox`; repeat for both |
+| `--skip-tree` | provision the toolchain but skip the Firefox clone: a lean box to snapshot and share with `scripts/export-vm.sh` |
 | `--arch x64\|arm64` | Windows on ARM needs an ARM64 host (Apple Silicon, ARM Linux). Windows 11 ARM has no inbox driver for VMware NICs; with `--setup-file` on a Mac that has Fusion, its vmxnet3 driver is staged into `fxsetup/drivers` and setup.ps1 installs it before touching the network |
 | `--key-file PATH` | Windows product key; omit to install unactivated (Microsoft's public generic KMS client key for the edition is fetched at render time so Setup never stops at the key page) |
 | `--allow-windows-update` | leave OS Windows Update auto-updates on; default off, so a build VM does not download/reboot mid-build. Store app auto-update is always off (it swaps winget mid-setup) |
@@ -67,6 +69,26 @@ gitignored `build/`.
   `mozconfig` (template + `build/win64/mozconfig.enterprise` for enterprise), bootstrapped
 - no Visual Studio (`mach bootstrap` fetches the MSVC + SDK bundle); use PowerShell
   (`.\mach.ps1`) or MozillaBuild's bash, same tree and caches
+
+## Reuse / share a VM
+
+To avoid rebuilding, or to hand a ready box to a coworker, snapshot a
+toolchain-only VM and export it:
+
+```sh
+# build a lean box (toolchain, Dev Drive, MozillaBuild; no Firefox clone)
+./bootstrap.sh --arch arm64 --setup-file ./setup.ps1 --skip-tree --vm
+
+# after first-logon setup finishes, package it
+scripts/export-vm.sh --hypervisor vmware              # your own reuse: an .ova
+scripts/export-vm.sh --hypervisor vmware --sysprep    # to share: new machine SID, runs OOBE
+```
+
+Each recipient imports the artifact and runs `C:\fxsetup\setup.ps1` (no
+`-SkipTree`) to clone Firefox on their own copy. Export one artifact per
+hypervisor: an ARM64 VMware image will not boot on Parallels, and vice versa.
+Use `--sysprep` when sharing so clones are not SID-identical; skip it for your
+own reuse.
 
 ## Notes
 
