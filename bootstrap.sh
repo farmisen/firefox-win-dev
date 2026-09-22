@@ -6,12 +6,15 @@
 #
 #   ./bootstrap.sh --arch x64 ( --setup-url https://raw.githubusercontent.com/<org>/firefox-win-dev/main
 #                             | --setup-file ./setup.ps1 ) \
+#                  [--product firefox] [--product enterprise-firefox]
 #                  [--username fxdev] [--key-file ~/.win11-pro.key] [--iso existing.iso] [--sidecar]
 #                  [--vm [--hypervisor qemu|vmware|parallels] [--vm-fresh]]
 #
 #   --setup-url    first logon downloads setup.ps1 & co. from this URL
 #   --setup-file   embed this setup.ps1 (+ sibling fx-dev.winget, mozconfigs/) on
 #                  the media instead; no network needed until setup.ps1 itself runs
+#   --product P    tree(s) to clone + bootstrap on the box: firefox (default) and/or
+#                  enterprise-firefox; repeat the flag for both
 #   --iso PATH     skip the download, use this ISO
 #   --sidecar      don't remaster; produce a tiny second ISO with the XML (and,
 #                  with --setup-file, the fxsetup folder)
@@ -35,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     --hypervisor) vm_args+=(--hypervisor "$2"); shift 2;;
     --vm-fresh) vm_args+=(--fresh); shift;;
     --setup-file) setup_file=$2; render_args+=(--setup-file "$2"); shift 2;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0;;
     *)         render_args+=("$1"); shift;;
   esac
 done

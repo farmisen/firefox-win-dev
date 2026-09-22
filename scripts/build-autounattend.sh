@@ -12,6 +12,8 @@
 #   --setup-file PATH         your local setup.ps1; it and its siblings get embedded
 #                             on the media (bootstrap.sh / make-iso.sh --fxsetup-dir)
 #                             and first logon finds the fxsetup folder on any drive
+#   --product NAME            tree(s) to clone + bootstrap at first logon; repeatable.
+#                             firefox (default) | enterprise-firefox
 #   --computer-name NAME      (default fx-win11-<arch>)
 #   --edition NAME            image name in install.wim (default "Windows 11 Pro")
 #   --out PATH                (default build/Autounattend.xml)
@@ -26,6 +28,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 arch=x64 username=fxdev password="${FXWD_PASSWORD:-}" key="${FXWD_PRODUCT_KEY:-}"
 setup_url="${FXWD_SETUP_URL:-}" setup_file="${FXWD_SETUP_FILE:-}" computer_name="" edition="Windows 11 Pro"
+products=()
 out="$here/build/Autounattend.xml"
 
 while [[ $# -gt 0 ]]; do
@@ -36,10 +39,11 @@ while [[ $# -gt 0 ]]; do
     --key-file)      key=$(tr -d '[:space:]' < "$2"); shift 2;;
     --setup-url)     setup_url=$2; shift 2;;
     --setup-file)    setup_file=$2; shift 2;;
+    --product)       products+=("$2"); shift 2;;
     --computer-name) computer_name=$2; shift 2;;
     --edition)       edition=$2; shift 2;;
     --out)           out=$2; shift 2;;
-    -h|--help)       sed -n '2,26p' "$0"; exit 0;;
+    -h|--help)       sed -n '2,28p' "$0"; exit 0;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -51,19 +55,27 @@ case "$arch" in
 esac
 [[ "$username" =~ ^[A-Za-z][A-Za-z0-9_-]{0,19}$ ]] \
   || { echo "username must be 1-20 chars, letters/digits/_/-, no spaces (Firefox build breaks on spaces)" >&2; exit 2; }
+[[ ${#products[@]} -gt 0 ]] || products=(firefox)
+for p in "${products[@]}"; do
+  case "$p" in firefox|enterprise-firefox) ;; *) echo "--product must be firefox or enterprise-firefox (got '$p')" >&2; exit 2;; esac
+done
+products_csv=$(IFS=,; echo "${products[*]}")
+# setup.ps1 arguments appended to the elevated -File invocation in the first-logon command
+setup_args="-Products $products_csv"
+
 if [[ -n "$setup_url" && -n "$setup_file" ]]; then
   echo "--setup-url and --setup-file are mutually exclusive" >&2; exit 2
 elif [[ -n "$setup_url" ]]; then
   [[ "$setup_url" =~ ^https?://[^[:space:]\"\'\<\>\&]+$ ]] || { echo "--setup-url must be an http(s) URL without quotes/&/<>" >&2; exit 2; }
   setup_url=${setup_url%/}
   # Fetch each file, then run setup.ps1 elevated. -NoExit keeps the window (and any error) on screen.
-  first_logon="powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command \"foreach (\$f in 'setup.ps1','fx-dev.winget','mozconfigs/mozconfig.debug','mozconfigs/mozconfig.opt') { \$d = Join-Path C:\\fxsetup \$f; New-Item -ItemType Directory -Force (Split-Path \$d) | Out-Null; Invoke-WebRequest -UseBasicParsing ('$setup_url/' + \$f) -OutFile \$d }; Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -NoExit -ExecutionPolicy Bypass -File C:\\fxsetup\\setup.ps1'\""
+  first_logon="powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command \"foreach (\$f in 'setup.ps1','fx-dev.winget','mozconfigs/mozconfig.debug','mozconfigs/mozconfig.opt') { \$d = Join-Path C:\\fxsetup \$f; New-Item -ItemType Directory -Force (Split-Path \$d) | Out-Null; Invoke-WebRequest -UseBasicParsing ('$setup_url/' + \$f) -OutFile \$d }; Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -NoExit -ExecutionPolicy Bypass -File C:\\fxsetup\\setup.ps1 $setup_args'\""
   mode="url $setup_url"
 elif [[ -n "$setup_file" ]]; then
   [[ -f "$setup_file" ]] || { echo "--setup-file: $setup_file not found" >&2; exit 2; }
   [[ "$(basename "$setup_file")" == setup.ps1 ]] || echo "warning: --setup-file is usually setup.ps1; the media will still look for fxsetup\\setup.ps1" >&2
   # Find fxsetup\ on any filesystem drive (C:\fxsetup from $OEM$, or the root of a sidecar ISO / USB).
-  first_logon="powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command \"if (-not (Test-Path C:\\fxsetup\\setup.ps1)) { \$src = Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path \$_.Root 'fxsetup' } | Where-Object { Test-Path (Join-Path \$_ 'setup.ps1') } | Select-Object -First 1; if (-not \$src) { throw 'fxsetup folder not found on any drive' }; Copy-Item -Recurse -Force \$src C:\\fxsetup }; Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -NoExit -ExecutionPolicy Bypass -File C:\\fxsetup\\setup.ps1'\""
+  first_logon="powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -Command \"if (-not (Test-Path C:\\fxsetup\\setup.ps1)) { \$src = Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path \$_.Root 'fxsetup' } | Where-Object { Test-Path (Join-Path \$_ 'setup.ps1') } | Select-Object -First 1; if (-not \$src) { throw 'fxsetup folder not found on any drive' }; Copy-Item -Recurse -Force \$src C:\\fxsetup }; Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -NoExit -ExecutionPolicy Bypass -File C:\\fxsetup\\setup.ps1 $setup_args'\""
   mode="file $setup_file"
 else
   echo "one of --setup-url URL / --setup-file PATH is required (or FXWD_SETUP_URL / FXWD_SETUP_FILE)" >&2; exit 2
@@ -110,4 +122,4 @@ xml.dom.minidom.parseString(s)          # well-formedness check
 open(dst, "w", encoding="utf-8", newline="\r\n").write(s)
 PY
 chmod 600 "$out"
-echo "rendered $out  (arch=$arch user=$username key=$([[ -n $key ]] && echo yes || echo no) setup=$mode)"
+echo "rendered $out  (arch=$arch user=$username key=$([[ -n $key ]] && echo yes || echo no) setup=$mode products=$products_csv)"

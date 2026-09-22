@@ -29,7 +29,15 @@ sudo apt install p7zip-full genisoimage        # once
 
 # B) embed this checkout's setup.ps1 (+ fx-dev.winget, mozconfigs/) on the media
 ./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --key-file ~/.win11-pro.key
+
+# which tree(s) the box gets: firefox (default), enterprise-firefox, or both
+./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --product enterprise-firefox
+./bootstrap.sh --arch x64 --setup-file ./setup.ps1 --product firefox --product enterprise-firefox
 ```
+
+Each product is cloned to `D:\src\<product>` with its own generated `mozconfig`
+(the chosen template plus, for enterprise-firefox, `build/win64/mozconfig.enterprise`);
+toolchains and sccache are shared. On an existing box: `C:\fxsetup\setup.ps1 -Products enterprise-firefox`.
 
 Exactly one of `--setup-url` / `--setup-file` is required. Both prompt for the
 local account password and write `build/win11-x64-unattended.iso`. B is what
