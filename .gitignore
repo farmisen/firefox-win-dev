@@ -9,3 +9,4 @@ Autounattend.local.xml
 # Rendered answer files, ISOs, extracted media, local tool downloads
 build/
 .tools/
+__pycache__/
