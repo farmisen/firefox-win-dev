@@ -76,6 +76,9 @@ setup_args="-Products $products_csv"
 # Provision the toolchain but stop before cloning: yields a lean, clone-free box to snapshot
 # and share (scripts/export-vm.sh). Each user clones Firefox on their own copy.
 [[ "$skip_tree" == 1 ]] && setup_args="$setup_args -SkipTree"
+# setup.ps1 owns the auto-update policies (it disables them after winget configure, since doing
+# it earlier blocks winget's Store fetch). Pass the opt-in through so it can honour it.
+[[ "$allow_windows_update" == 1 ]] && setup_args="$setup_args -AllowWindowsUpdate"
 
 if [[ -n "$setup_url" && -n "$setup_file" ]]; then
   echo "--setup-url and --setup-file are mutually exclusive" >&2; exit 2
@@ -126,28 +129,20 @@ key=${key^^}
 key_setup="<ProductKey><Key>$key</Key><WillShowUI>OnError</WillShowUI></ProductKey>"
 key_specialize="<ProductKey>$key</ProductKey>"
 
-# Windows Update (the OS) auto-update: off unless explicitly allowed. Store app auto-update is
-# always off (fixed in the template). Empty string leaves only the Store policy in specialize.
-wu_policy=""
-if [[ "$allow_windows_update" != 1 ]]; then
-  wu_policy='<RunSynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>2</Order><Path>reg add HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU /v NoAutoUpdate /t REG_DWORD /d 1 /f</Path></RunSynchronousCommand>'
-fi
-
 mkdir -p "$(dirname "$out")"
 # Placeholders are replaced with python to avoid sed escaping problems; the
 # first-logon command is XML-escaped (& < > appear in PowerShell) before insertion.
 python3 - "$here/Autounattend.template.xml" "$out" \
   "$xml_arch" "$username" "$pw_b64" "$key_setup" "$key_specialize" \
-  "$first_logon" "$computer_name" "$edition" "$wu_policy" <<'PY'
+  "$first_logon" "$computer_name" "$edition" <<'PY'
 import sys, xml.dom.minidom
-src, dst, arch, user, pw, ks, ksp, flc, cn, ed, wu = sys.argv[1:]
+src, dst, arch, user, pw, ks, ksp, flc, cn, ed = sys.argv[1:]
 s = open(src, encoding="utf-8").read()
 from xml.sax.saxutils import escape
 flc = escape(flc)
 for k, v in {"@@ARCH@@": arch, "@@USERNAME@@": user, "@@PASSWORD_B64@@": pw,
              "@@PRODUCT_KEY_SETUP@@": ks, "@@PRODUCT_KEY_SPECIALIZE@@": ksp,
-             "@@FIRST_LOGON_COMMAND@@": flc, "@@COMPUTERNAME@@": cn, "@@EDITION@@": ed,
-             "@@WU_POLICY@@": wu}.items():
+             "@@FIRST_LOGON_COMMAND@@": flc, "@@COMPUTERNAME@@": cn, "@@EDITION@@": ed}.items():
     s = s.replace(k, v)
 import re
 left = sorted(set(re.findall(r"@@[A-Z0-9_]+@@", s)))

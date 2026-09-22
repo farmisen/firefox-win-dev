@@ -5,16 +5,18 @@
   Idempotent. Run it on first logon (Autounattend does), or any time later to
   converge the machine. Every step checks before it acts.
 
-    0. drivers under .\drivers (pnputil); VMware Tools from the attached CD; wait until DNS answers
+    0. drivers under .\drivers (pnputil), then wait until DNS answers
     1. winget up to date
     2. Dev Drive at D:  (RAW partition or RAW disk -> ReFS Dev Drive)
-    3. winget configure -f fx-dev.winget
+    3. winget configure -f fx-dev.winget  (then quiet Store/OS auto-updates)
     4. MozillaBuild
     5. Environment (MOZBUILD_STATE_PATH, SCCACHE_DIR) + Defender exclusions
     6. git config for a large tree on Windows
     7. clone the requested tree(s) + mach bootstrap (unless -SkipTree)
+    8. guest tools (VMware) - always last: the driver swap blacks out the console until a
+       restart, so nothing that needs the session may run after it
 
-  Usage:  .\setup.ps1 [-Products firefox,enterprise-firefox] [-DevDriveLetter D] [-SrcRoot D:\src] [-SkipTree]
+  Usage:  .\setup.ps1 [-Products firefox,enterprise-firefox] [-DevDriveLetter D] [-SrcRoot D:\src] [-SkipTree] [-AllowWindowsUpdate]
 
   Products (comma-separated; each gets its own clone under SrcRoot and its own mozconfig):
     firefox             https://github.com/mozilla-firefox/firefox
@@ -27,7 +29,8 @@ param(
     [string]$SrcRoot        = "$($DevDriveLetter):\src",
     [string[]]$Products     = @('firefox'),        # "a,b" from -File is one string; split below
     [string]$Mozconfig      = 'mozconfig.debug',   # in .\mozconfigs
-    [switch]$SkipTree
+    [switch]$SkipTree,
+    [switch]$AllowWindowsUpdate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,6 +42,17 @@ trap {
 }
 try { Start-Transcript -Path (Join-Path $Here 'setup.log') -Append | Out-Null } catch {}   # everything below also lands in C:\fxsetup\setup.log
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
+# $ErrorActionPreference='Stop' (set above, and right for cmdlets) makes Windows PowerShell 5.1
+# promote a *native* command's stderr into a terminating NativeCommandError as soon as its streams
+# are redirected - and "2>$null" counts as redirecting. Native tools use stderr for warnings and
+# progress perfectly legitimately (powercfg on an absent power plan, Set-ExecutionPolicy noting a
+# more specific scope), so run those with the preference relaxed and judge them by exit code.
+function Invoke-Native {
+    param([Parameter(Mandatory)][scriptblock]$Command)
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Command } finally { $ErrorActionPreference = $old }
+}
 
 # --------------------------------------------------------------- 0. network
 Step 'drivers: install anything staged under .\drivers'
@@ -53,36 +67,7 @@ if (Test-Path $drivers) {
     }
 }
 
-# ----------------------------------------------------------- 0b. guest tools
-Step 'guest tools: VMware Tools when this is a VMware guest without it'
-# vm.sh attaches the hypervisor's Tools ISO as an extra CD-ROM. Tools bring display resize,
-# clipboard, time sync and, for the host, vmrun guest operations (copy files, run commands).
-# REBOOT=R defers the reboot; what needs one (display driver) arrives at the next restart.
-$maker = (Get-CimInstance Win32_ComputerSystem).Manufacturer
-if ($maker -match 'VMware') {
-    if (Get-Service VMTools -ErrorAction SilentlyContinue) {
-        Write-Host '  VMware Tools already installed'
-    } else {
-        $toolsSetup = Get-Volume | Where-Object { $_.DriveType -eq 'CD-ROM' -and $_.DriveLetter } |
-            ForEach-Object { Join-Path "$($_.DriveLetter):\" 'setup.exe' } |
-            Where-Object { (Test-Path $_) -and ((Get-Item $_).VersionInfo.CompanyName -match 'VMware|Broadcom') } |
-            Select-Object -First 1
-        if ($toolsSetup) {
-            Write-Host "  installing VMware Tools from $toolsSetup (silent, reboot deferred)..."
-            $p = Start-Process $toolsSetup -ArgumentList '/S /v"/qn REBOOT=R"' -Wait -PassThru
-            if ($p.ExitCode -in 0, 3010) { Write-Host "  VMware Tools installed (exit $($p.ExitCode)); restart the VM when setup.ps1 is done" }
-            else { Write-Warning "VMware Tools setup exited $($p.ExitCode); continuing without Tools" }
-        } else {
-            Write-Host '  no VMware Tools CD attached; skipping (vm.sh attaches it when Fusion/Workstation ships it)'
-        }
-    }
-} elseif ($maker -match 'Parallels') {
-    Write-Host '  Parallels guest: install Parallels Tools from the host with  prlctl installtools <vm>'
-} else {
-    Write-Host "  not a VMware guest ($maker); nothing to do"
-}
-
-# ------------------------------------------------------------ 0c. network
+# ------------------------------------------------------------ 0b. network
 Step 'network: wait for DNS'
 # First logon fires before the network stack has finished identifying the connection, and the
 # Store (used by winget configure --enable) then fails with 0x80072ee7 "name not resolved".
@@ -135,7 +120,7 @@ function Invoke-WinGet {
     }
 }
 function Get-WinGetVersion($exe) {
-    $raw = (& $exe --version 2>$null | Select-Object -First 1) -replace '^v', ''
+    $raw = (Invoke-Native { & $exe --version } 2>$null | Select-Object -First 1) -replace '^v', ''
     try { [version](($raw -split '[-+]')[0]) } catch { $null }
 }
 $minWinGet = [version]'1.11.0'
@@ -244,6 +229,23 @@ if ($LASTEXITCODE -ne 0) { throw "winget configure failed ($LASTEXITCODE)" }
 # Refresh PATH so git/python from this session are visible below.
 $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
 
+# --------------------------------------------------- 3b. quiet auto-updates
+Step 'auto-update policy: lock down after winget has what it needs'
+# Set AFTER winget configure, not in the answer file: disabling Store auto-download before first
+# logon also blocks winget configure --enable from fetching its configuration components from the
+# Store (fails 0x80004004 "Operation aborted"). By now those components are in, so lock it down:
+# no silent App Installer/winget swap and no toolchain drift on a box meant to be reproducible.
+New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore' -Force | Out-Null
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore' -Name AutoDownload -PropertyType DWord -Value 2 -Force | Out-Null
+Write-Host '  Store auto-update disabled'
+if ($AllowWindowsUpdate) {
+    Write-Host '  OS Windows Update left on (-AllowWindowsUpdate)'
+} else {
+    New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Force | Out-Null
+    New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoUpdate -PropertyType DWord -Value 1 -Force | Out-Null
+    Write-Host '  OS Windows Update auto-install disabled'
+}
+
 # ------------------------------------------------------------ 4. MozillaBuild
 Step 'MozillaBuild: ensure C:\mozilla-build'
 if (-not (Test-Path 'C:\mozilla-build\start-shell.bat')) {
@@ -285,16 +287,28 @@ $env:SCCACHE_DIR         = "$($DevDriveLetter):\sccache"
 # PowerShell and PowerShell 7 keep separate policies, so set both.
 foreach ($shell in 'powershell.exe', 'pwsh.exe') {
     if (Get-Command $shell -ErrorAction SilentlyContinue) {
-        & $shell -NoProfile -Command 'Set-ExecutionPolicy -Scope LocalMachine RemoteSigned -Force' 2>$null
+        # We are launched with -ExecutionPolicy Bypass (the first-logon command does that), which
+        # sets the *Process* scope. Setting LocalMachine still succeeds, but the child then prints
+        # "... overridden by a policy defined at a more specific scope" to stderr, which is why
+        # this needs Invoke-Native. The machine policy is set regardless; see the echo below.
+        Invoke-Native { & $shell -NoProfile -Command 'Set-ExecutionPolicy -Scope LocalMachine RemoteSigned -Force' } 2>&1 | Out-Null
     }
 }
+$effective = (Get-ExecutionPolicy -Scope LocalMachine)
+Write-Host "  execution policy (LocalMachine): $effective"
 
 # Dev Drive already runs Defender in performance mode; these cover the C: bits.
 foreach ($p in 'C:\mozilla-build', "$env:LOCALAPPDATA\Temp") {
     Add-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue
 }
 # Bare metal: don't let the power plan throttle a 40-minute build.
-powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>$null   # High performance (no-op if absent)
+Invoke-Native { powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c } 2>&1 | Out-Null  # High performance (absent on many Win11 images)
+# Never blank the console or suspend: unattended provisioning and long builds generate no input,
+# and the stock 5-minute display timeout makes a working VM look like a hung one (black window).
+foreach ($s in 'monitor-timeout-ac', 'monitor-timeout-dc', 'standby-timeout-ac', 'standby-timeout-dc') {
+    Invoke-Native { powercfg /change $s 0 } 2>&1 | Out-Null
+}
+Write-Host '  display blanking and sleep disabled'
 
 # ------------------------------------------------------------ 6. git config
 Step 'git: settings for a very large tree on Windows'
@@ -307,8 +321,41 @@ git config --global fetch.writeCommitGraph true
 git config --global feature.manyFiles true
 git config --global maintenance.auto false   # let `git maintenance start` own it per repo
 
+# Guest tools go in LAST, once nothing else needs the interactive session. The installer swaps
+# the display and input drivers and cannot finish binding them until a restart: run it earlier and
+# the console goes black with dead input for the remainder, which wedges anything using that
+# session (winget configure hangs) and makes a working VM look hung. Nothing else needs Tools -
+# the guest NIC comes from the vmxnet3 driver injected in step 0. Called at the end of whichever
+# path we take, so the long clone/bootstrap stays watchable.
+function Install-GuestTools {
+    Step 'guest tools: VMware Tools when this is a VMware guest without it'
+    $maker = (Get-CimInstance Win32_ComputerSystem).Manufacturer
+    if ($maker -match 'VMware') {
+        if (Get-Service VMTools -ErrorAction SilentlyContinue) {
+            Write-Host '  VMware Tools already installed'
+        } else {
+            $toolsSetup = Get-Volume | Where-Object { $_.DriveType -eq 'CD-ROM' -and $_.DriveLetter } |
+                ForEach-Object { Join-Path "$($_.DriveLetter):\" 'setup.exe' } |
+                Where-Object { (Test-Path $_) -and ((Get-Item $_).VersionInfo.CompanyName -match 'VMware|Broadcom') } |
+                Select-Object -First 1
+            if ($toolsSetup) {
+                Write-Host "  installing VMware Tools from $toolsSetup (silent, reboot deferred)..."
+                $p = Start-Process $toolsSetup -ArgumentList '/S /v"/qn REBOOT=R"' -Wait -PassThru
+                if ($p.ExitCode -in 0, 3010) { Write-Host "  VMware Tools installed (exit $($p.ExitCode)); the console stays black until you restart" }
+                else { Write-Warning "VMware Tools setup exited $($p.ExitCode); continuing without Tools" }
+            } else {
+                Write-Host '  no VMware Tools CD attached; skipping (vm.sh attaches it when Fusion/Workstation ships it)'
+            }
+        }
+    } elseif ($maker -match 'Parallels') {
+        Write-Host '  Parallels guest: install Parallels Tools from the host with  prlctl installtools <vm>'
+    } else {
+        Write-Host "  not a VMware guest ($maker); nothing to do"
+    }
+}
+
 # ------------------------------------------------- 7. tree(s) + mach bootstrap
-if ($SkipTree) { Write-Host "`n-SkipTree given; done."; exit 0 }
+if ($SkipTree) { Install-GuestTools; Write-Host "`n-SkipTree given; done. Reboot once."; exit 0 }
 
 $Catalog = @{
     'firefox'            = @{ Remote = 'https://github.com/mozilla-firefox/firefox';   Branch = $null;              Include = $null }
@@ -358,5 +405,7 @@ foreach ($name in $Products) {
     } finally { Pop-Location }
 }
 
-Write-Host "`nDone. Reboot once (long paths / Dev Mode), then:" -ForegroundColor Green
+Install-GuestTools
+
+Write-Host "`nDone. Reboot once (long paths / Dev Mode / guest tools), then:" -ForegroundColor Green
 foreach ($t in $trees) { Write-Host "  cd $t ; .\mach.ps1 build" -ForegroundColor Green }
