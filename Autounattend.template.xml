@@ -92,6 +92,20 @@
       <TimeZone>UTC</TimeZone>
       @@PRODUCT_KEY_SPECIALIZE@@
     </component>
+
+    <!-- Policies land in the installed OS (specialize runs there, unlike the windowsPE reg adds
+         above which touch WinPE's transient hive). Set before first logon, so before winget runs. -->
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="@@ARCH@@" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous>
+        <!-- Store auto-update swaps App Installer/winget mid-setup (winget.exe becomes briefly
+             unlaunchable) and drifts the toolchain afterwards. Off; setup.ps1 pins the version. -->
+        <RunSynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>1</Order>
+          <Path>reg add HKLM\SOFTWARE\Policies\Microsoft\WindowsStore /v AutoDownload /t REG_DWORD /d 2 /f</Path>
+        </RunSynchronousCommand>
+        @@WU_POLICY@@
+      </RunSynchronous>
+    </component>
   </settings>
 
   <settings pass="oobeSystem">

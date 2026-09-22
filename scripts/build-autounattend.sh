@@ -6,7 +6,9 @@
 #   --arch x64|arm64          (default x64)
 #   --username NAME           local admin, no spaces (default fxdev)
 #   --password PW             or omit to be prompted (never echoed)
-#   --key-file PATH           file containing a Windows product key (optional)
+#   --key-file PATH           file containing a Windows product key. Omit to install
+#                             unactivated: Microsoft's public generic (KMS client) key
+#                             for --edition is fetched from learn.microsoft.com's source
 #   --setup-url URL           first logon downloads setup.ps1, fx-dev.winget and
 #                             mozconfigs/* from this http(s) base URL   ...OR...
 #   --setup-file PATH         your local setup.ps1; it and its siblings get embedded
@@ -14,6 +16,9 @@
 #                             and first logon finds the fxsetup folder on any drive
 #   --product NAME            tree(s) to clone + bootstrap at first logon; repeatable.
 #                             firefox (default) | enterprise-firefox
+#   --allow-windows-update    leave Windows Update auto-updates on (default: off, so the
+#                             OS does not download/reboot mid-build). Store app auto-update
+#                             is always disabled either way (it swaps winget under setup).
 #   --computer-name NAME      (default fx-win11-<arch>)
 #   --edition NAME            image name in install.wim (default "Windows 11 Pro")
 #   --out PATH                (default build/Autounattend.xml)
@@ -28,6 +33,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 arch=x64 username=fxdev password="${FXWD_PASSWORD:-}" key="${FXWD_PRODUCT_KEY:-}"
 setup_url="${FXWD_SETUP_URL:-}" setup_file="${FXWD_SETUP_FILE:-}" computer_name="" edition="Windows 11 Pro"
+allow_windows_update=${FXWD_ALLOW_WINDOWS_UPDATE:-0}
 products=()
 out="$here/build/Autounattend.xml"
 
@@ -40,10 +46,11 @@ while [[ $# -gt 0 ]]; do
     --setup-url)     setup_url=$2; shift 2;;
     --setup-file)    setup_file=$2; shift 2;;
     --product)       products+=("$2"); shift 2;;
+    --allow-windows-update) allow_windows_update=1; shift;;
     --computer-name) computer_name=$2; shift 2;;
     --edition)       edition=$2; shift 2;;
     --out)           out=$2; shift 2;;
-    -h|--help)       sed -n '2,28p' "$0"; exit 0;;
+    -h|--help)       sed -n '2,30p' "$0"; exit 0;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -92,12 +99,31 @@ fi
 # Windows Setup expects base64( UTF-16LE( password + "Password" ) ).
 pw_b64=$(printf '%s' "${password}Password" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')
 
-key_setup="" key_specialize=""
-if [[ -n "$key" ]]; then
-  key=${key^^}
-  [[ "$key" =~ ^[A-Z0-9]{5}(-[A-Z0-9]{5}){4}$ ]] || { echo "product key must look like XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" >&2; exit 2; }
-  key_setup="<ProductKey><Key>$key</Key><WillShowUI>OnError</WillShowUI></ProductKey>"
-  key_specialize="<ProductKey>$key</ProductKey>"
+key_source=file
+if [[ -z "$key" ]]; then
+  # Without a ProductKey element, Setup on retail media stops at the product-key page
+  # even though the edition is preselected. Microsoft's published KMS client key
+  # (GVLK) for the edition gets past it; Windows installs unactivated, exactly as if
+  # "I don't have a product key" had been clicked, and never activates without a KMS
+  # host. The key is looked up at render time from the Learn page's source so no key
+  # text lives in this repo. Table rows look like:
+  #   | Windows 11 Pro<br>Windows 10 Pro | W269N-XXXXX-XXXXX-XXXXX-XXXXX |
+  gvlk_url=https://raw.githubusercontent.com/MicrosoftDocs/windowsserverdocs/main/WindowsServerDocs/get-started/kms-client-activation-keys.md
+  key=$(curl -fsSL "$gvlk_url" \
+        | sed -n "s/^| $edition\(<br>[^|]*\)\{0,1\} | \([A-Z0-9-]\{29\}\) |.*/\2/p" | head -n1) || key=""
+  [[ -n "$key" ]] || { echo "no generic install key for '$edition' found at $gvlk_url (Home has none, or the fetch failed); pass --key-file" >&2; exit 2; }
+  key_source=generic
+fi
+key=${key^^}
+[[ "$key" =~ ^[A-Z0-9]{5}(-[A-Z0-9]{5}){4}$ ]] || { echo "product key must look like XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" >&2; exit 2; }
+key_setup="<ProductKey><Key>$key</Key><WillShowUI>OnError</WillShowUI></ProductKey>"
+key_specialize="<ProductKey>$key</ProductKey>"
+
+# Windows Update (the OS) auto-update: off unless explicitly allowed. Store app auto-update is
+# always off (fixed in the template). Empty string leaves only the Store policy in specialize.
+wu_policy=""
+if [[ "$allow_windows_update" != 1 ]]; then
+  wu_policy='<RunSynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>2</Order><Path>reg add HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU /v NoAutoUpdate /t REG_DWORD /d 1 /f</Path></RunSynchronousCommand>'
 fi
 
 mkdir -p "$(dirname "$out")"
@@ -105,15 +131,16 @@ mkdir -p "$(dirname "$out")"
 # first-logon command is XML-escaped (& < > appear in PowerShell) before insertion.
 python3 - "$here/Autounattend.template.xml" "$out" \
   "$xml_arch" "$username" "$pw_b64" "$key_setup" "$key_specialize" \
-  "$first_logon" "$computer_name" "$edition" <<'PY'
+  "$first_logon" "$computer_name" "$edition" "$wu_policy" <<'PY'
 import sys, xml.dom.minidom
-src, dst, arch, user, pw, ks, ksp, flc, cn, ed = sys.argv[1:]
+src, dst, arch, user, pw, ks, ksp, flc, cn, ed, wu = sys.argv[1:]
 s = open(src, encoding="utf-8").read()
 from xml.sax.saxutils import escape
 flc = escape(flc)
 for k, v in {"@@ARCH@@": arch, "@@USERNAME@@": user, "@@PASSWORD_B64@@": pw,
              "@@PRODUCT_KEY_SETUP@@": ks, "@@PRODUCT_KEY_SPECIALIZE@@": ksp,
-             "@@FIRST_LOGON_COMMAND@@": flc, "@@COMPUTERNAME@@": cn, "@@EDITION@@": ed}.items():
+             "@@FIRST_LOGON_COMMAND@@": flc, "@@COMPUTERNAME@@": cn, "@@EDITION@@": ed,
+             "@@WU_POLICY@@": wu}.items():
     s = s.replace(k, v)
 import re
 left = sorted(set(re.findall(r"@@[A-Z0-9_]+@@", s)))
@@ -122,4 +149,4 @@ xml.dom.minidom.parseString(s)          # well-formedness check
 open(dst, "w", encoding="utf-8", newline="\r\n").write(s)
 PY
 chmod 600 "$out"
-echo "rendered $out  (arch=$arch user=$username key=$([[ -n $key ]] && echo yes || echo no) setup=$mode products=$products_csv)"
+echo "rendered $out  (arch=$arch user=$username key=$key_source setup=$mode products=$products_csv store-update=off win-update=$([[ $allow_windows_update == 1 ]] && echo on || echo off))"
