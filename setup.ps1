@@ -411,7 +411,11 @@ function Invoke-Unelevated {
     # git and the rest on PATH, and "git not found" and "git failed" look identical from here.
     @(
         '@echo off'
-        "echo 1> ""$started"""
+        # Parenthesised on purpose. In cmd a digit immediately before '>' is a stream handle, so
+        # "echo 1> file" redirects stdout and "echo %ERRORLEVEL%> file" silently writes nothing
+        # whenever the command succeeded and the value is 0 - which made success look like
+        # failure. The parentheses keep the digit an argument to echo.
+        "(echo 1)> ""$started"""
         "cd /d ""$WorkingDir"""
         "echo [cwd] > ""$logFile"" 2>&1"
         "cd >> ""$logFile"" 2>&1"
@@ -423,7 +427,7 @@ function Invoke-Unelevated {
         "echo %PATH% >> ""$logFile"" 2>&1"
         "echo [output] >> ""$logFile"" 2>&1"
         "$Command >> ""$logFile"" 2>&1"
-        "echo %ERRORLEVEL%> ""$marker"""
+        "(echo %ERRORLEVEL%)> ""$marker"""
     ) | Set-Content -Path $cmdFile -Encoding ASCII
     # /IT with /RU and no /RP runs in the logged-on user's interactive session on an interactive
     # token, so no password is needed; omitting /RL HIGHEST leaves it on the filtered, that is
@@ -449,7 +453,15 @@ function Invoke-Unelevated {
     while (-not (Test-Path $marker) -and (Get-Date) -lt $hardStop) { Start-Sleep -Seconds 15 }
     Invoke-Native { schtasks /delete /tn $task /f } 2>&1 | Out-Null
     if (-not (Test-Path $marker)) { Write-Warning "$Label did not report an exit code within 4h"; return 1 }
-    $rc = try { [int]((Get-Content $marker -Raw).Trim()) } catch { 1 }
+    # Do not quietly turn an unreadable marker into "failed": that is exactly how a cmd quoting
+    # bug masqueraded as a failing git clone that had in fact completed.
+    $raw = Get-Content $marker -Raw -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        Write-Warning "$Label left an empty exit-code marker; treating as failure"
+        $rc = 1
+    } else {
+        $rc = try { [int]$raw.Trim() } catch { Write-Warning "$Label wrote an unparseable exit code: $raw"; 1 }
+    }
     if ($rc -ne 0 -and (Test-Path $logFile)) {
         Write-Host "  --- last 40 lines of $Label (full log: $logFile) ---"
         Get-Content $logFile -Tail 40 | ForEach-Object { Write-Host "    $_" }
