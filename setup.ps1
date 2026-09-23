@@ -12,8 +12,10 @@
     4. MozillaBuild
     5. Environment (MOZBUILD_STATE_PATH, SCCACHE_DIR) + Defender exclusions
     6. git config for a large tree on Windows
-    7. clone the requested tree(s) + mach bootstrap (unless -SkipTree), then repair any
-       toolchain directory bootstrap left unreadable
+    7. clone the requested tree(s) + mach bootstrap (unless -SkipTree). These run as the
+       logged-on user, NOT elevated: extracting toolchains elevated leaves them owned by
+       Administrators and unreadable to the developer's own shell (see Invoke-Unelevated).
+       A leftover-permissions check follows as a safety net
     8. guest tools (VMware) - always last: the driver swap blacks out the console until a
        restart, so nothing that needs the session may run after it
 
@@ -374,6 +376,55 @@ function Install-GuestTools {
 }
 
 # ------------------------------------------------- 7. tree(s) + mach bootstrap
+# The clone and mach bootstrap must NOT run elevated, even though this script does.
+#
+# Python 3.12 on Windows honours the POSIX mode passed to os.mkdir by synthesising a security
+# descriptor, and tarfile.makedir() creates every extracted directory with mode 0o700, intending
+# to relax it later via chmod. 0o700 means owner-only, so the descriptor comes out *protected*
+# (SYSTEM + Administrators + OWNER RIGHTS, inheritance discarded) and the later chmod cannot undo
+# it: on Windows os.chmod only flips the read-only attribute. Access then hinges entirely on
+# OWNER RIGHTS, i.e. on who owns the directory. Extract while elevated and the owner is
+# BUILTIN\Administrators, which a normal shell holds deny-only under UAC - so the developer
+# cannot even list the toolchains mach just installed for them, and the next build dies with
+# "PermissionError: [WinError 5] Access is denied". Run these as the logged-on user and the
+# owner is that user, OWNER RIGHTS grants them, and the protected DACL stops mattering.
+# (This is why ordinary Firefox devs, who never bootstrap elevated, do not hit it.)
+function Invoke-Unelevated {
+    param(
+        [Parameter(Mandatory)][string]$WorkingDir,
+        [Parameter(Mandatory)][string]$Command,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $task    = 'fxdev-unelevated'
+    $cmdFile = Join-Path $Here 'unelevated.cmd'
+    $marker  = Join-Path $Here 'unelevated.rc'
+    Remove-Item $marker -Force -ErrorAction SilentlyContinue
+    @('@echo off', "cd /d ""$WorkingDir""", $Command, "echo %ERRORLEVEL%> ""$marker""") |
+        Set-Content -Path $cmdFile -Encoding ASCII
+    # /IT with /RU and no /RP runs in the logged-on user's interactive session on an interactive
+    # token, so no password is needed; omitting /RL HIGHEST leaves it on the filtered, that is
+    # non-elevated, token. Returning $null means "could not drop privileges" so the caller can
+    # fall back rather than fail the provision.
+    Invoke-Native { schtasks /create /tn $task /tr $cmdFile /sc once /st 00:00 /ru $env:USERNAME /it /f } 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $null }
+    try {
+        Invoke-Native { schtasks /run /tn $task } 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        Write-Host "  running as $env:USERNAME (not elevated): $Label"
+        while ($true) {
+            Start-Sleep -Seconds 10
+            if (Test-Path $marker) { break }
+            $q = Invoke-Native { schtasks /query /tn $task /fo list } 2>&1 | Out-String
+            # Task gone or stopped without leaving a marker: give the file a moment, then give up.
+            if ($q -notmatch 'Running') { Start-Sleep -Seconds 5; break }
+        }
+    } finally {
+        Invoke-Native { schtasks /delete /tn $task /f } 2>&1 | Out-Null
+    }
+    if (-not (Test-Path $marker)) { return $null }
+    try { return [int]((Get-Content $marker -Raw).Trim()) } catch { return $null }
+}
+
 if ($SkipTree) { Install-GuestTools; Write-Host "`n-SkipTree given; done. Reboot once."; exit 0 }
 
 $Catalog = @{
@@ -393,10 +444,17 @@ foreach ($name in $Products) {
     $trees += $tree
     Step "${name}: ensure clone at $tree"
     if (-not (Test-Path (Join-Path $tree 'mach'))) {
-        $cloneArgs = @('clone')
-        if ($spec.Branch) { $cloneArgs += @('--branch', $spec.Branch) }
-        git @cloneArgs $spec.Remote $tree
-        if ($LASTEXITCODE -ne 0) { throw "git clone of $name failed ($LASTEXITCODE)" }
+        $branchArg = if ($spec.Branch) { " --branch $($spec.Branch)" } else { '' }
+        $rc = Invoke-Unelevated -WorkingDir $SrcRoot -Label "git clone $name" `
+                -Command "git clone$branchArg $($spec.Remote) ""$tree"""
+        if ($null -eq $rc) {
+            Write-Warning 'could not drop privileges; cloning elevated (the ACL check below will repair what it can)'
+            $cloneArgs = @('clone')
+            if ($spec.Branch) { $cloneArgs += @('--branch', $spec.Branch) }
+            git @cloneArgs $spec.Remote $tree
+            $rc = $LASTEXITCODE
+        }
+        if ($rc -ne 0) { throw "git clone of $name failed ($rc)" }
         git -C $tree maintenance start
     }
 
@@ -415,21 +473,29 @@ foreach ($name in $Products) {
     Set-Content -Path (Join-Path $tree 'mozconfig') -Value $lines -Encoding ascii
 
     Step "${name}: mach bootstrap (non-interactive; pinned toolchains incl. MSVC/SDK bundle, cached in $env:MOZBUILD_STATE_PATH)"
-    Push-Location $tree
-    try {
-        # mach from PowerShell needs C:\mozilla-build\bin on PATH (done above) and a native
-        # python on PATH (winget). Documented as experimental; verified working on 25H2.
-        .\mach.ps1 --no-interactive bootstrap --application-choice='Firefox for Desktop'
-        if ($LASTEXITCODE -ne 0) { throw "mach bootstrap failed for $name ($LASTEXITCODE)" }
-    } finally { Pop-Location }
+    # mach from PowerShell needs C:\mozilla-build\bin on PATH (done above) and a native python on
+    # PATH (winget). Documented as experimental; verified working on 25H2. Unelevated: see the
+    # note on Invoke-Unelevated - this is the step whose toolchain directories go unreadable
+    # otherwise.
+    $machCmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ' +
+               '".\mach.ps1 --no-interactive bootstrap --application-choice=''Firefox for Desktop''"'
+    $rc = Invoke-Unelevated -WorkingDir $tree -Label "mach bootstrap $name" -Command $machCmd
+    if ($null -eq $rc) {
+        Write-Warning 'could not drop privileges; bootstrapping elevated (the ACL check below will repair what it can)'
+        Push-Location $tree
+        try {
+            .\mach.ps1 --no-interactive bootstrap --application-choice='Firefox for Desktop'
+            $rc = $LASTEXITCODE
+        } finally { Pop-Location }
+    }
+    if ($rc -ne 0) { throw "mach bootstrap failed for $name ($rc)" }
 }
 
-# Toolchains that bootstrap extracts can land with an owner SID Windows cannot resolve: fxdev
-# then lacks even READ_CONTROL on them, and the next build dies with
-# "PermissionError: [WinError 5] Access is denied" when mach tries to replace one. The Dev Drive
-# grant above cannot cover this - it runs before bootstrap, and these arrive after. Probing is
-# cheap (one Get-Acl per toolchain, no recursion), so only pay for takeown/icacls on the
-# subtrees that are actually unreadable, which is normally none.
+# Safety net for the tarfile/os.mkdir(0o700) descriptor described above: with bootstrap run
+# unelevated this should find nothing, but it still covers a box provisioned before that fix, or
+# one where dropping privileges failed and we fell back to running elevated. Probing is cheap
+# (one Get-Acl per toolchain, no recursion), so only pay for takeown/icacls on the subtrees that
+# are actually unreadable.
 Step 'toolchains: check permissions bootstrap left behind'
 $broken = @()
 foreach ($d in Get-ChildItem $env:MOZBUILD_STATE_PATH -Directory -ErrorAction SilentlyContinue) {
