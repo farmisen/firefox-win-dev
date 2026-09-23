@@ -79,6 +79,13 @@ resources:
     metadata: { description: gh pr checkout for reviewing others' work }
     properties: { id: GitHub.cli, source: winget }
 
+  # Compiler cache. Both mozconfigs set --with-ccache=sccache, and mach bootstrap does not
+  # supply the binary (it fetches ~20 toolchains, sccache is not one), so configure fails with
+  # "Cannot find ccache" without this.
+  - type: Microsoft.WinGet/Package
+    name: sccache
+    properties: { id: Mozilla.sccache, source: winget }
+
   # ---- Investigate / debug ------------------------------------------------
 
   - type: Microsoft.WinGet/Package
@@ -92,13 +99,3 @@ resources:
   - type: Microsoft.WinGet/Package
     name: VSCode
     properties: { id: Microsoft.VisualStudioCode, source: winget }
-
-  # Optional. mach bootstrap downloads the pinned MSVC + Windows SDK bundle
-  # itself, so Build Tools is only for the debugger/IDE experience, not for
-  # compiling. Uncomment if you want it.
-  # - type: Microsoft.WinGet/Package
-  #   name: VSBuildTools
-  #   properties:
-  #     id: Microsoft.VisualStudio.2022.BuildTools
-  #     source: winget
-  #     installMode: silent

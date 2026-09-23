@@ -7,8 +7,9 @@
 ac_add_options --enable-debug
 ac_add_options --enable-debug-symbols
 
-# sccache lives at $SCCACHE_DIR on the Dev Drive (set by setup.ps1).
-# mach bootstrap installs the sccache binary under MOZBUILD_STATE_PATH.
+# sccache caches into $SCCACHE_DIR on the Dev Drive (set by setup.ps1). The binary comes from
+# fx-dev.winget (Mozilla.sccache): mach bootstrap does NOT install it, and without it configure
+# stops at "Cannot find ccache".
 ac_add_options --with-ccache=sccache
 
 # objdir on the Dev Drive, next to the tree, one per configuration.

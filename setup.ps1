@@ -12,7 +12,8 @@
     4. MozillaBuild
     5. Environment (MOZBUILD_STATE_PATH, SCCACHE_DIR) + Defender exclusions
     6. git config for a large tree on Windows
-    7. clone the requested tree(s) + mach bootstrap (unless -SkipTree)
+    7. clone the requested tree(s) + mach bootstrap (unless -SkipTree), then repair any
+       toolchain directory bootstrap left unreadable
     8. guest tools (VMware) - always last: the driver swap blacks out the console until a
        restart, so nothing that needs the session may run after it
 
@@ -206,11 +207,19 @@ if ($vol -and $vol.FileSystemType -eq 'ReFS') {
     Write-Host "  Formatted ${DevDriveLetter}: as Dev Drive."
 }
 # This script runs elevated, but the developer's shell will not be. Give the user full control
-# of the volume with inheritance (ideally while it is still empty; /T propagates on a re-run
-# after content exists) so mach can later delete/replace toolchains under .mozbuild.
+# of the volume with inheritance so mach can later delete/replace toolchains under .mozbuild.
+# The inheritable ACE on the root is what matters; /T only exists to fix content that predates
+# it. On a re-run the drive holds a Firefox checkout (~500k files) and that walk takes minutes
+# for nothing, so check the root first and recurse only when the ACE is actually missing.
 $devUser = $env:USERNAME
-icacls "$($DevDriveLetter):\" /grant "${devUser}:(OI)(CI)F" /T /C /Q | Out-Null
-Write-Host "  ${DevDriveLetter}: full control granted to $devUser (inheritable)"
+$rootAce = "${devUser}:(OI)(CI)(F)"
+$rootAcl = Invoke-Native { icacls "$($DevDriveLetter):\" } 2>&1 | Out-String
+if ($rootAcl -like "*$rootAce*") {
+    Write-Host "  ${DevDriveLetter}: $devUser already has inheritable full control"
+} else {
+    Write-Host "  ${DevDriveLetter}: granting full control to $devUser (recursive, slow if the drive has content)"
+    Invoke-Native { icacls "$($DevDriveLetter):\" /grant "${devUser}:(OI)(CI)F" /T /C /Q } 2>&1 | Out-Null
+}
 New-Item -ItemType Directory -Force -Path $SrcRoot, "$($DevDriveLetter):\.mozbuild", "$($DevDriveLetter):\sccache" | Out-Null
 
 # --------------------------------------------------------- 3. winget configure
@@ -413,6 +422,30 @@ foreach ($name in $Products) {
         .\mach.ps1 --no-interactive bootstrap --application-choice='Firefox for Desktop'
         if ($LASTEXITCODE -ne 0) { throw "mach bootstrap failed for $name ($LASTEXITCODE)" }
     } finally { Pop-Location }
+}
+
+# Toolchains that bootstrap extracts can land with an owner SID Windows cannot resolve: fxdev
+# then lacks even READ_CONTROL on them, and the next build dies with
+# "PermissionError: [WinError 5] Access is denied" when mach tries to replace one. The Dev Drive
+# grant above cannot cover this - it runs before bootstrap, and these arrive after. Probing is
+# cheap (one Get-Acl per toolchain, no recursion), so only pay for takeown/icacls on the
+# subtrees that are actually unreadable, which is normally none.
+Step 'toolchains: check permissions bootstrap left behind'
+$broken = @()
+foreach ($d in Get-ChildItem $env:MOZBUILD_STATE_PATH -Directory -ErrorAction SilentlyContinue) {
+    try { Get-Acl $d.FullName -ErrorAction Stop | Out-Null } catch { $broken += $d.FullName }
+}
+if (-not $broken) {
+    Write-Host '  all readable'
+} else {
+    Write-Host "  $($broken.Count) unreadable; taking ownership and regranting"
+    foreach ($b in $broken) {
+        Write-Host "    $b"
+        Invoke-Native { takeown /f $b /r /d y } 2>&1 | Out-Null
+        Invoke-Native { icacls $b /grant "${devUser}:(OI)(CI)F" /t /c /q } 2>&1 | Out-Null
+    }
+    $still = @($broken | Where-Object { try { Get-Acl $_ -ErrorAction Stop | Out-Null; $false } catch { $true } })
+    if ($still) { Write-Warning "still unreadable after repair: $($still -join ', ')" }
 }
 
 Install-GuestTools
