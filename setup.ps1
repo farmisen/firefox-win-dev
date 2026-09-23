@@ -399,15 +399,30 @@ function Invoke-Unelevated {
     $cmdFile = Join-Path $Here 'unelevated.cmd'
     $started = Join-Path $Here 'unelevated.started'
     $marker  = Join-Path $Here 'unelevated.rc'
-    Remove-Item $started, $marker -Force -ErrorAction SilentlyContinue
+    $logFile = Join-Path $Here 'unelevated.log'
+    Remove-Item $started, $marker, $logFile -Force -ErrorAction SilentlyContinue
     # The script reports two things back through the filesystem rather than through schtasks
     # status, whose wording is localised and which lags behind the process: "I started" and
     # "I finished with this exit code".
+    # Output is captured: the task owns its own console window, which closes the moment it ends,
+    # so without this a failure inside it is undiagnosable - all the caller sees is an exit code.
+    # The environment is logged first because a scheduled task does not necessarily inherit the
+    # shell's: the Task Scheduler service can hand out an environment cached before winget put
+    # git and the rest on PATH, and "git not found" and "git failed" look identical from here.
     @(
         '@echo off'
         "echo 1> ""$started"""
         "cd /d ""$WorkingDir"""
-        $Command
+        "echo [cwd] > ""$logFile"" 2>&1"
+        "cd >> ""$logFile"" 2>&1"
+        "echo [whoami] >> ""$logFile"" 2>&1"
+        "whoami /groups | findstr /i ""Medium High Mandatory"" >> ""$logFile"" 2>&1"
+        "echo [where git] >> ""$logFile"" 2>&1"
+        "where git >> ""$logFile"" 2>&1"
+        "echo [PATH] >> ""$logFile"" 2>&1"
+        "echo %PATH% >> ""$logFile"" 2>&1"
+        "echo [output] >> ""$logFile"" 2>&1"
+        "$Command >> ""$logFile"" 2>&1"
         "echo %ERRORLEVEL%> ""$marker"""
     ) | Set-Content -Path $cmdFile -Encoding ASCII
     # /IT with /RU and no /RP runs in the logged-on user's interactive session on an interactive
@@ -434,7 +449,12 @@ function Invoke-Unelevated {
     while (-not (Test-Path $marker) -and (Get-Date) -lt $hardStop) { Start-Sleep -Seconds 15 }
     Invoke-Native { schtasks /delete /tn $task /f } 2>&1 | Out-Null
     if (-not (Test-Path $marker)) { Write-Warning "$Label did not report an exit code within 4h"; return 1 }
-    try { return [int]((Get-Content $marker -Raw).Trim()) } catch { return 1 }
+    $rc = try { [int]((Get-Content $marker -Raw).Trim()) } catch { 1 }
+    if ($rc -ne 0 -and (Test-Path $logFile)) {
+        Write-Host "  --- last 40 lines of $Label (full log: $logFile) ---"
+        Get-Content $logFile -Tail 40 | ForEach-Object { Write-Host "    $_" }
+    }
+    return $rc
 }
 
 if ($SkipTree) { Install-GuestTools; Write-Host "`n-SkipTree given; done. Reboot once."; exit 0 }
