@@ -397,32 +397,44 @@ function Invoke-Unelevated {
     )
     $task    = 'fxdev-unelevated'
     $cmdFile = Join-Path $Here 'unelevated.cmd'
+    $started = Join-Path $Here 'unelevated.started'
     $marker  = Join-Path $Here 'unelevated.rc'
-    Remove-Item $marker -Force -ErrorAction SilentlyContinue
-    @('@echo off', "cd /d ""$WorkingDir""", $Command, "echo %ERRORLEVEL%> ""$marker""") |
-        Set-Content -Path $cmdFile -Encoding ASCII
+    Remove-Item $started, $marker -Force -ErrorAction SilentlyContinue
+    # The script reports two things back through the filesystem rather than through schtasks
+    # status, whose wording is localised and which lags behind the process: "I started" and
+    # "I finished with this exit code".
+    @(
+        '@echo off'
+        "echo 1> ""$started"""
+        "cd /d ""$WorkingDir"""
+        $Command
+        "echo %ERRORLEVEL%> ""$marker"""
+    ) | Set-Content -Path $cmdFile -Encoding ASCII
     # /IT with /RU and no /RP runs in the logged-on user's interactive session on an interactive
     # token, so no password is needed; omitting /RL HIGHEST leaves it on the filtered, that is
-    # non-elevated, token. Returning $null means "could not drop privileges" so the caller can
-    # fall back rather than fail the provision.
+    # non-elevated, token.
     Invoke-Native { schtasks /create /tn $task /tr $cmdFile /sc once /st 00:00 /ru $env:USERNAME /it /f } 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { return $null }
-    try {
-        Invoke-Native { schtasks /run /tn $task } 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { return $null }
-        Write-Host "  running as $env:USERNAME (not elevated): $Label"
-        while ($true) {
-            Start-Sleep -Seconds 10
-            if (Test-Path $marker) { break }
-            $q = Invoke-Native { schtasks /query /tn $task /fo list } 2>&1 | Out-String
-            # Task gone or stopped without leaving a marker: give the file a moment, then give up.
-            if ($q -notmatch 'Running') { Start-Sleep -Seconds 5; break }
-        }
-    } finally {
+    Invoke-Native { schtasks /run /tn $task } 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Invoke-Native { schtasks /delete /tn $task /f } 2>&1 | Out-Null; return $null }
+
+    # $null means "nothing ran, it is safe to fall back". Only valid before the command starts:
+    # returning it afterwards is how an earlier version got a second git clone racing the first.
+    $deadline = (Get-Date).AddSeconds(90)
+    while (-not (Test-Path $started) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+    if (-not (Test-Path $started)) {
         Invoke-Native { schtasks /delete /tn $task /f } 2>&1 | Out-Null
+        return $null
     }
-    if (-not (Test-Path $marker)) { return $null }
-    try { return [int]((Get-Content $marker -Raw).Trim()) } catch { return $null }
+
+    Write-Host "  running as $env:USERNAME (not elevated): $Label"
+    # It is running, so from here we never return $null - we wait for its exit code however long
+    # it takes. The cap only exists so a killed task cannot hang provisioning forever.
+    $hardStop = (Get-Date).AddHours(4)
+    while (-not (Test-Path $marker) -and (Get-Date) -lt $hardStop) { Start-Sleep -Seconds 15 }
+    Invoke-Native { schtasks /delete /tn $task /f } 2>&1 | Out-Null
+    if (-not (Test-Path $marker)) { Write-Warning "$Label did not report an exit code within 4h"; return 1 }
+    try { return [int]((Get-Content $marker -Raw).Trim()) } catch { return 1 }
 }
 
 if ($SkipTree) { Install-GuestTools; Write-Host "`n-SkipTree given; done. Reboot once."; exit 0 }
@@ -444,6 +456,13 @@ foreach ($name in $Products) {
     $trees += $tree
     Step "${name}: ensure clone at $tree"
     if (-not (Test-Path (Join-Path $tree 'mach'))) {
+        # A directory here without a mach in it is a clone that never finished (interrupted, or
+        # two clones racing). git refuses to clone into it, which would block every later run,
+        # and there is nothing worth keeping, so clear it out.
+        if (Test-Path $tree) {
+            Write-Warning "$tree exists but has no mach: discarding the incomplete clone"
+            Remove-Item $tree -Recurse -Force -ErrorAction Stop
+        }
         $branchArg = if ($spec.Branch) { " --branch $($spec.Branch)" } else { '' }
         $rc = Invoke-Unelevated -WorkingDir $SrcRoot -Label "git clone $name" `
                 -Command "git clone$branchArg $($spec.Remote) ""$tree"""
